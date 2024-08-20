@@ -1,6 +1,6 @@
-The dyplo kernel module exports the following devices:
+The datra kernel module exports the following devices:
 
-/dev/dyploctl
+/dev/datractl
 The main control node.
 Multiple processes can open this node simultaneously.
 read:
@@ -17,7 +17,7 @@ mmap:
 ioctl:
   For getting and setting routes in user applications.
 
-/dev/dyplocfg*
+/dev/datracfg*
 Implementation dependent configuration node. Allows access to 64k of AXI
 memory. There is one device file per block. This device can be opened
 once for reading, and once for writing (or once in read+write mode).
@@ -26,7 +26,7 @@ read, seek, write:
   offsets must be aligned on 32-bit boundaries. Writing or reading less
   than 4 bytes will fail.
 
-/dev/dyplor*
+/dev/datrar*
 Access to a "Read" type fifo in the CPU node.
 Each can be opened only once.
 read:
@@ -37,7 +37,7 @@ read:
 poll:
   Allows the device to be used in a select() or poll() system call.
 
-/dev/dyplow*
+/dev/datraw*
 Access to a "Write" type fifo in the CPU node.
 Each can be opened only once.
 write:
@@ -48,7 +48,7 @@ write:
 poll:
   Allows the device to be used in a select() or poll() system call.
 
-/dev/dyplod*
+/dev/datrad*
 Access to a DMA node.
 Each stream can be opened only once, the access requested determines which
 stream direction it refers to. Opening in RDWR mode is interpreted as WRONLY.
@@ -66,7 +66,7 @@ read:
 poll:
   Allows the device to be used in a select() or poll() system call.
 
-/proc/dyplo
+/proc/datra
 Outputs debugging information about the device's status. Will read
 various fields via the AXI bus and display the contents in ASCII.
 Displays:
@@ -123,15 +123,15 @@ Backplane counters:
   BPT: Backplane traffic, number of words "passing by".
 AXI overhead: r=321 w=60
   Number of words read or written to the AXI bus to control the IP, but not part of
-  transferred data streams. Reading /proc/dyplo also increments these values.
+  transferred data streams. Reading /proc/datra also increments these values.
 
 
 Typical driver usage from userspace:
-- Open /dev/dyploctl
-- Open /dev/dyplorX and /dev/dyplowY fifo interfaces
-- Open /dev/dyplocfg1 for read/write and configure the node by writing
+- Open /dev/datractl
+- Open /dev/datrarX and /dev/datrawY fifo interfaces
+- Open /dev/datracfg1 for read/write and configure the node by writing
   settings to it.
-- Use ioctrl(dyploctl, DYPLO_IOCSROUTE, ...) to set up routes to and
+- Use ioctrl(datractl, DATRA_IOCSROUTE, ...) to set up routes to and
   from the first configurable block to fifo's X and Y.
-- Write data to dyplowY and read results back from dyplorX.
+- Write data to datrawY and read results back from datrarX.
 

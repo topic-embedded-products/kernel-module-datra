@@ -1,2 +1,2 @@
 # Copy this file to /etc/udev/rules.d to give everybody access
-KERNEL=="dyplo*", MODE:="0666"
+KERNEL=="datra*", MODE:="0666"

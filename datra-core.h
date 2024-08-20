@@ -1,18 +1,18 @@
 /*
- * dyplo-core.h
+ * datra-core.h
  *
- * Dyplo loadable kernel module.
+ * Datra loadable kernel module.
  *
  * (C) Copyright 2013-2015 Topic Embedded Products B.V. (http://www.topic.nl).
  * All rights reserved.
  *
- * This file is part of kernel-module-dyplo.
- * kernel-module-dyplo is free software: you can redistribute it and/or modify
+ * This file is part of kernel-module-datra.
+ * kernel-module-datra is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
  *
- * kernel-module-dyplo is distributed in the hope that it will be useful,
+ * kernel-module-datra is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
@@ -36,19 +36,19 @@
 
 #define ICAP_NOT_AVAILABLE	((u8)-1)
 
-struct dyplo_dev; /* forward */
+struct datra_dev; /* forward */
 
-struct dyplo_config_dev
+struct datra_config_dev
 {
-	struct dyplo_dev* parent; /* Owner of this struct */
+	struct datra_dev* parent; /* Owner of this struct */
 	u32 __iomem *base;
 	u32 __iomem *control_base;
 	mode_t open_mode; /* Only FMODE_READ and FMODE_WRITE */
-	irqreturn_t(*isr)(struct dyplo_dev *dev, struct dyplo_config_dev *cfg_dev); /* IRQ handler, if any */
+	irqreturn_t(*isr)(struct datra_dev *dev, struct datra_config_dev *cfg_dev); /* IRQ handler, if any */
 	void* private_data; /* Extra information for sub-device */
 };
 
-struct dyplo_dev
+struct datra_dev
 {
 	struct device *device;
 	struct cdev cdev_control;
@@ -62,7 +62,7 @@ struct dyplo_dev
 	int irq;
 	int number_of_config_devices;
 	unsigned int stream_id_width;
-	struct dyplo_config_dev *config_devices;
+	struct datra_config_dev *config_devices;
 	u8 count_fifo_write_devices;
 	u8 count_fifo_read_devices;
 	u8 number_of_dma_devices;
@@ -70,8 +70,8 @@ struct dyplo_dev
 	u32 dma_addr_bits;
 };
 
-int dyplo_core_remove(struct device *device, struct dyplo_dev *dev);
+int datra_core_remove(struct device *device, struct datra_dev *dev);
 
-int dyplo_core_probe(struct device *device, struct dyplo_dev *dev);
+int datra_core_probe(struct device *device, struct datra_dev *dev);
 
-void dyplo_core_apply_license(struct dyplo_dev *dev, const void *data);
+void datra_core_apply_license(struct datra_dev *dev, const void *data);

@@ -1,14 +1,14 @@
-Dyplo Questions:
+Datra Questions:
  What choices are there for data transfers?
  Which option is best for what purpose?
  How best to connect the logic to the CPU?
 
 
-Dyplo's CPU to Logic interface supports many options, most of which can
+Datra's CPU to Logic interface supports many options, most of which can
 be set at runtime, a few must be implemented in hardware.
 
 
-Dyplo offers two node types for CPU-Logic data transfers: DMA nodes and
+Datra offers two node types for CPU-Logic data transfers: DMA nodes and
 CPU nodes. Data can be transferred from Logic to CPU and from CPU to
 Logic.
 
@@ -90,7 +90,7 @@ only be altered by creating a new bitstream.
 
 The DMA nodes can be connected to the HP or ACP port of the Zynq. The
 only difference for the driver is that you have to specify
-"dma-coherent;" in the devicetree configuration for Dyplo, to inform
+"dma-coherent;" in the devicetree configuration for Datra, to inform
 the system that the ACP port is being used. Which port is best, depends
 on the application domain, so we'll try to explain how to make
 this decision.

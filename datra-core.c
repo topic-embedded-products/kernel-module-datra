@@ -1,18 +1,18 @@
 /*
- * dyplo-core.c
+ * datra-core.c
  *
- * Dyplo loadable kernel module.
+ * Datra loadable kernel module.
  *
  * (C) Copyright 2013-2015 Topic Embedded Products B.V. (http://www.topic.nl).
  * All rights reserved.
  *
- * This file is part of kernel-module-dyplo.
- * kernel-module-dyplo is free software: you can redistribute it and/or modify
+ * This file is part of kernel-module-datra.
+ * kernel-module-datra is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
  *
- * kernel-module-dyplo is distributed in the hope that it will be useful,
+ * kernel-module-datra is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
@@ -40,9 +40,9 @@
 #include <linux/seq_file.h>
 #include <linux/dma-mapping.h>
 #include <linux/kfifo.h>
-#include "dyplo-core.h"
-#include "dyplo-ioctl.h"
-#include "dyplo.h"
+#include "datra-core.h"
+#include "datra-ioctl.h"
+#include "datra.h"
 
 #include <linux/version.h>
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
@@ -52,56 +52,56 @@
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Topic Embedded Products <www.topic.nl>");
 
-static const char DRIVER_CLASS_NAME[] = "dyplo";
-static const char DRIVER_CONTROL_NAME[] = "dyploctl";
-static const char DRIVER_CONFIG_NAME[] = "dyplocfg%d";
-static const char DRIVER_FIFO_CLASS_NAME[] = "dyplo-fifo";
-static const char DRIVER_FIFO_WRITE_NAME[] = "dyplow%d";
-static const char DRIVER_FIFO_READ_NAME[] = "dyplor%d";
-static const char DRIVER_DMA_CLASS_NAME[] = "dyplo-dma";
-static const char DRIVER_DMA_DEVICE_NAME[] = "dyplod%d";
+static const char DRIVER_CLASS_NAME[] = "datra";
+static const char DRIVER_CONTROL_NAME[] = "datractl";
+static const char DRIVER_CONFIG_NAME[] = "datracfg%d";
+static const char DRIVER_FIFO_CLASS_NAME[] = "datra-fifo";
+static const char DRIVER_FIFO_WRITE_NAME[] = "datraw%d";
+static const char DRIVER_FIFO_READ_NAME[] = "datrar%d";
+static const char DRIVER_DMA_CLASS_NAME[] = "datra-dma";
+static const char DRIVER_DMA_DEVICE_NAME[] = "datrad%d";
 
 /* Maximum number of commands, i.e. the size of the command queue in
  * logic. This is mostly dynamically used, but in some places, it's
  * good to know how far we can go. */
 #define DMA_MAX_NUMBER_OF_COMMANDS	8
 
-static const unsigned int dyplo_dma_default_block_size = 64 * 1024;
-static const size_t dyplo_dma_memory_size = 256 * 1024;
+static const unsigned int datra_dma_default_block_size = 64 * 1024;
+static const size_t datra_dma_memory_size = 256 * 1024;
 
 /* How to do IO. We rarely need any memory barriers, so add a "quick"
  * version that skips the memory barriers. */
 #define ioread32_quick	__raw_readl
 #define iowrite32_quick	__raw_writel
 
-static inline void dyplo_reg_write_quick(u32 __iomem *base, u32 reg, u32 value)
+static inline void datra_reg_write_quick(u32 __iomem *base, u32 reg, u32 value)
 {
 	iowrite32_quick(value, base + (reg >> 2));
 }
 
-static inline void dyplo_reg_write_quick_index(u32 __iomem *base, u32 reg, u32 index, u32 value)
+static inline void datra_reg_write_quick_index(u32 __iomem *base, u32 reg, u32 index, u32 value)
 {
 	iowrite32_quick(value, (base + (reg >> 2) + index));
 }
 
-static inline u32 dyplo_reg_read(u32 __iomem *base, u32 reg)
+static inline u32 datra_reg_read(u32 __iomem *base, u32 reg)
 {
 	return ioread32(base + (reg >> 2));
 }
 
-static inline u32 dyplo_reg_read_quick(u32 __iomem *base, u32 reg)
+static inline u32 datra_reg_read_quick(u32 __iomem *base, u32 reg)
 {
 	return ioread32_quick(base + (reg >> 2));
 }
 
-static inline u32 dyplo_reg_read_quick_index(u32 __iomem *base, u32 reg, u32 index)
+static inline u32 datra_reg_read_quick_index(u32 __iomem *base, u32 reg, u32 index)
 {
 	return ioread32_quick(base + (reg >> 2) + index);
 }
 
-struct dyplo_fifo_dev
+struct datra_fifo_dev
 {
-	struct dyplo_config_dev *config_parent;
+	struct datra_config_dev *config_parent;
 	wait_queue_head_t fifo_wait_queue; /* So the IRQ handler can notify waiting threads */
 	int index;
 	unsigned int words_transfered;
@@ -111,10 +111,10 @@ struct dyplo_fifo_dev
 	bool is_open;
 };
 
-struct dyplo_fifo_control_dev
+struct datra_fifo_control_dev
 {
-	struct dyplo_config_dev *config_parent;
-	struct dyplo_fifo_dev *fifo_devices;
+	struct datra_config_dev *config_parent;
+	struct datra_fifo_dev *fifo_devices;
 	struct cdev cdev_fifo_write;
 	struct cdev cdev_fifo_read;
 	dev_t devt_first_fifo_device;
@@ -122,12 +122,12 @@ struct dyplo_fifo_control_dev
 	u8 number_of_fifo_read_devices;
 };
 
-struct dyplo_dma_to_logic_operation {
+struct datra_dma_to_logic_operation {
 	dma_addr_t addr;
 	unsigned int size;
 };
 
-struct dyplo_dma_from_logic_operation {
+struct datra_dma_from_logic_operation {
 	char* addr;
 	unsigned int size;
 	unsigned int next_tail;
@@ -135,19 +135,19 @@ struct dyplo_dma_from_logic_operation {
 	u16 short_transfer; /* Non-zero if size < blocksize */
 };
 
-struct dyplo_dma_dev;
+struct datra_dma_dev;
 
-struct dyplo_dma_block {
+struct datra_dma_block {
 	/* Kernel part */
-	struct dyplo_dma_dev* parent;
+	struct datra_dma_dev* parent;
 	dma_addr_t phys_addr;
 	void* mem_addr;
 	/* User part */
-	struct dyplo_buffer_block data;
+	struct datra_buffer_block data;
 };
 
-struct dyplo_dma_block_set {
-	struct dyplo_dma_block *blocks;
+struct datra_dma_block_set {
+	struct datra_dma_block *blocks;
 	u32 size;
 	u32 count;
 	u32 flags;
@@ -156,22 +156,22 @@ struct dyplo_dma_block_set {
 /* Use DMA coherent memory. Depending on hardware HP/ACP, this may yield
  * non-cachable memory which is particularly noticeable on logic-to-cpu
  * unless you have hardware coherency (dma-coherent in DT). */
-#define DYPLO_DMA_BLOCK_FLAG_COHERENT	1
+#define DATRA_DMA_BLOCK_FLAG_COHERENT	1
 /* Use streaming instead of coherent memory. This requires cacheline
  * maintenance which may cost more than actually copying the data. */
-#define DYPLO_DMA_BLOCK_FLAG_STREAMING	2
+#define DATRA_DMA_BLOCK_FLAG_STREAMING	2
 /* Indicates that the memory pointers point to a shared block and should
  * not be freed. */
-#define DYPLO_DMA_BLOCK_FLAG_SHAREDMEM	4
+#define DATRA_DMA_BLOCK_FLAG_SHAREDMEM	4
 
-struct dyplo_dma_dev
+struct datra_dma_dev
 {
-	struct dyplo_config_dev* config_parent;
+	struct datra_config_dev* config_parent;
 	struct cdev cdev_dma;
 	mode_t open_mode; /* FMODE_READ FMODE_WRITE */
 
-	struct dyplo_dma_block_set dma_to_logic_blocks;
-	struct dyplo_dma_block_set dma_from_logic_blocks;
+	struct datra_dma_block_set dma_to_logic_blocks;
+	struct datra_dma_block_set dma_from_logic_blocks;
 
 	/* big blocks of memory for read/write transfers */
 	dma_addr_t dma_to_logic_handle;
@@ -180,7 +180,7 @@ struct dyplo_dma_dev
 	unsigned int dma_to_logic_head;
 	unsigned int dma_to_logic_tail;
 	unsigned int dma_to_logic_block_size;
-	DECLARE_KFIFO(dma_to_logic_wip, struct dyplo_dma_to_logic_operation, 16);
+	DECLARE_KFIFO(dma_to_logic_wip, struct datra_dma_to_logic_operation, 16);
 	wait_queue_head_t wait_queue_to_logic;
 
 	dma_addr_t dma_from_logic_handle;
@@ -190,45 +190,45 @@ struct dyplo_dma_dev
 	unsigned int dma_from_logic_tail;
 	unsigned int dma_from_logic_block_size;
 	wait_queue_head_t wait_queue_from_logic;
-	struct dyplo_dma_from_logic_operation dma_from_logic_current_op;
+	struct datra_dma_from_logic_operation dma_from_logic_current_op;
 	bool dma_from_logic_full;
 	bool dma_64bit;
 };
 
-union dyplo_route_item_u {
+union datra_route_item_u {
 	unsigned int route;
-	struct dyplo_route_item_t route_item;
+	struct datra_route_item_t route_item;
 };
 
 /* Relative offset of the configuration node in memory map */
-static unsigned int dyplo_get_config_mem_offset(const struct dyplo_config_dev *cfg_dev)
+static unsigned int datra_get_config_mem_offset(const struct datra_config_dev *cfg_dev)
 {
 	return ((char*)cfg_dev->base - (char*)cfg_dev->parent->base);
 }
 /* 0-based index of the config node */
-static unsigned int dyplo_get_config_index(const struct dyplo_config_dev *cfg_dev)
+static unsigned int datra_get_config_index(const struct datra_config_dev *cfg_dev)
 {
-	return (((char*)cfg_dev->base - (char*)cfg_dev->parent->base) / DYPLO_CONFIG_SIZE) - 1;
+	return (((char*)cfg_dev->base - (char*)cfg_dev->parent->base) / DATRA_CONFIG_SIZE) - 1;
 }
 
-static u32 dyplo_cfg_get_version_id(const struct dyplo_config_dev *cfg_dev)
+static u32 datra_cfg_get_version_id(const struct datra_config_dev *cfg_dev)
 {
-	return dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_REG_VERSION_ID);
+	return datra_reg_read_quick(cfg_dev->control_base, DATRA_REG_VERSION_ID);
 }
-static u8 dyplo_cfg_get_node_type(const struct dyplo_config_dev *cfg_dev)
+static u8 datra_cfg_get_node_type(const struct datra_config_dev *cfg_dev)
 {
-	return (dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_REG_TYPE_ID) >> 8) & 0xFF;
+	return (datra_reg_read_quick(cfg_dev->control_base, DATRA_REG_TYPE_ID) >> 8) & 0xFF;
 }
-static u8 dyplo_number_of_input_queues(const struct dyplo_config_dev *cfg_dev)
+static u8 datra_number_of_input_queues(const struct datra_config_dev *cfg_dev)
 {
-	return dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_REG_NODE_INFO) & 0x0F;
+	return datra_reg_read_quick(cfg_dev->control_base, DATRA_REG_NODE_INFO) & 0x0F;
 }
-static u8 dyplo_number_of_output_queues(const struct dyplo_config_dev *cfg_dev)
+static u8 datra_number_of_output_queues(const struct datra_config_dev *cfg_dev)
 {
-	return (dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_REG_NODE_INFO) >> 4) & 0x0F;
+	return (datra_reg_read_quick(cfg_dev->control_base, DATRA_REG_NODE_INFO) >> 4) & 0x0F;
 }
 
-static ssize_t dyplo_generic_read(const u32 __iomem *mapped_memory,
+static ssize_t datra_generic_read(const u32 __iomem *mapped_memory,
 	char __user *buf, size_t count, loff_t *f_pos)
 {
 	size_t offset;
@@ -237,13 +237,13 @@ static ssize_t dyplo_generic_read(const u32 __iomem *mapped_memory,
 	unsigned int data;
 
 	/* EOF when past our area */
-	if (*f_pos >= DYPLO_CONFIG_SIZE)
+	if (*f_pos >= DATRA_CONFIG_SIZE)
 		return 0;
 
 	offset = ((size_t)*f_pos) & ~0x03; /* Align to word size */
 	count &= ~0x03;
-	if ((offset + count) > DYPLO_CONFIG_SIZE)
-		count = DYPLO_CONFIG_SIZE - offset;
+	if ((offset + count) > DATRA_CONFIG_SIZE)
+		count = DATRA_CONFIG_SIZE - offset;
 	mapped_memory += (offset >> 2);
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
 	if (unlikely(!access_ok(buf, count)))
@@ -264,7 +264,7 @@ static ssize_t dyplo_generic_read(const u32 __iomem *mapped_memory,
 	return count;
 }
 
-static ssize_t dyplo_generic_write(u32 __iomem *mapped_memory,
+static ssize_t datra_generic_write(u32 __iomem *mapped_memory,
 	const char __user *buf, size_t count, loff_t *f_pos)
 {
 	size_t offset;
@@ -273,7 +273,7 @@ static ssize_t dyplo_generic_write(u32 __iomem *mapped_memory,
 	unsigned int data;
 
 	/* EOF when past our area */
-	if (*f_pos >= DYPLO_CONFIG_SIZE)
+	if (*f_pos >= DATRA_CONFIG_SIZE)
 		return 0;
 
 	if (count < 4) /* Do not allow read or write below word size */
@@ -281,8 +281,8 @@ static ssize_t dyplo_generic_write(u32 __iomem *mapped_memory,
 
 	offset = ((size_t)*f_pos) & ~0x03; /* Align to word size */
 	count &= ~0x03;
-	if ((offset + count) > DYPLO_CONFIG_SIZE)
-		count = DYPLO_CONFIG_SIZE - offset;
+	if ((offset + count) > DATRA_CONFIG_SIZE)
+		count = DATRA_CONFIG_SIZE - offset;
 	mapped_memory += (offset >> 2);
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
 	if (unlikely(!access_ok(buf, count)))
@@ -303,12 +303,12 @@ static ssize_t dyplo_generic_write(u32 __iomem *mapped_memory,
 	return count;
 }
 
-static int dyplo_ctl_open(struct inode *inode, struct file *filp)
+static int datra_ctl_open(struct inode *inode, struct file *filp)
 {
 	int status = 0;
-	struct dyplo_dev *dev; /* device information */
+	struct datra_dev *dev; /* device information */
 
-	dev = container_of(inode->i_cdev, struct dyplo_dev, cdev_control);
+	dev = container_of(inode->i_cdev, struct datra_dev, cdev_control);
 	if (down_interruptible(&dev->fop_sem))
 		return -ERESTARTSYS;
 	filp->private_data = dev; /* for other methods */
@@ -316,29 +316,29 @@ static int dyplo_ctl_open(struct inode *inode, struct file *filp)
 	return status;
 }
 
-static int dyplo_ctl_release(struct inode *inode, struct file *filp)
+static int datra_ctl_release(struct inode *inode, struct file *filp)
 {
-	//struct dyplo_dev *dev = filp->private_data;
+	//struct datra_dev *dev = filp->private_data;
 	return 0;
 }
 
-static ssize_t dyplo_ctl_write (struct file *filp, const char __user *buf, size_t count,
+static ssize_t datra_ctl_write (struct file *filp, const char __user *buf, size_t count,
 	loff_t *f_pos)
 {
-	struct dyplo_dev *dev = filp->private_data;
+	struct datra_dev *dev = filp->private_data;
 
-	return dyplo_generic_write(dev->base, buf, count, f_pos);
+	return datra_generic_write(dev->base, buf, count, f_pos);
 }
 
-static ssize_t dyplo_ctl_read(struct file *filp, char __user *buf, size_t count,
+static ssize_t datra_ctl_read(struct file *filp, char __user *buf, size_t count,
                 loff_t *f_pos)
 {
-	struct dyplo_dev *dev = filp->private_data;
+	struct datra_dev *dev = filp->private_data;
 
-	return dyplo_generic_read(dev->base, buf, count, f_pos);
+	return datra_generic_read(dev->base, buf, count, f_pos);
 }
 
-static loff_t dyplo_ctl_llseek(struct file *filp, loff_t off, int whence)
+static loff_t datra_ctl_llseek(struct file *filp, loff_t off, int whence)
 {
     loff_t newpos;
 
@@ -352,56 +352,56 @@ static loff_t dyplo_ctl_llseek(struct file *filp, loff_t off, int whence)
         break;
 
       case 2: /* SEEK_END */
-        newpos = DYPLO_CONFIG_SIZE + off;
+        newpos = DATRA_CONFIG_SIZE + off;
         break;
 
       default: /* can't happen */
         return -EINVAL;
     }
     if (newpos < 0) return -EINVAL;
-    if (newpos > DYPLO_CONFIG_SIZE) return -EINVAL;
+    if (newpos > DATRA_CONFIG_SIZE) return -EINVAL;
     filp->f_pos = newpos;
     return newpos;
 }
 
 
-static int dyplo_ctl_mmap(struct file *filp, struct vm_area_struct *vma)
+static int datra_ctl_mmap(struct file *filp, struct vm_area_struct *vma)
 {
-	struct dyplo_dev *dev = filp->private_data;
+	struct datra_dev *dev = filp->private_data;
 
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 	if (dev->mem)
-		return vm_iomap_memory(vma, dev->mem->start, DYPLO_CONFIG_SIZE);
+		return vm_iomap_memory(vma, dev->mem->start, DATRA_CONFIG_SIZE);
 	else
-		return vm_iomap_memory(vma, virt_to_phys(dev->base), DYPLO_CONFIG_SIZE);
+		return vm_iomap_memory(vma, virt_to_phys(dev->base), DATRA_CONFIG_SIZE);
 }
 
-static void dyplo_ctl_route_remove_dst(struct dyplo_dev *dev, u32 route)
+static void datra_ctl_route_remove_dst(struct datra_dev *dev, u32 route)
 {
 	int ctl_index;
 	int queue_index;
 	for (ctl_index = 0; ctl_index < dev->number_of_config_devices; ++ctl_index)
 	{
 		const int number_of_fifos =
-			dyplo_number_of_output_queues(&dev->config_devices[ctl_index]);
+			datra_number_of_output_queues(&dev->config_devices[ctl_index]);
 		int __iomem *ctl_route_base = dev->base +
-			(DYPLO_REG_CONTROL_ROUTE_TABLE>>2) +
-			(ctl_index << DYPLO_STREAM_ID_WIDTH);
+			(DATRA_REG_CONTROL_ROUTE_TABLE>>2) +
+			(ctl_index << DATRA_STREAM_ID_WIDTH);
 
 		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
 		{
 			if (ioread32_quick(ctl_route_base + queue_index) == route) {
 				pr_debug("removed route %d,%d->%d,%d\n",
 					ctl_index, queue_index,
-					(route >> DYPLO_STREAM_ID_WIDTH) - 1,
-					route & ((0x1 << DYPLO_STREAM_ID_WIDTH) - 1));
+					(route >> DATRA_STREAM_ID_WIDTH) - 1,
+					route & ((0x1 << DATRA_STREAM_ID_WIDTH) - 1));
 				iowrite32_quick(0, ctl_route_base + queue_index);
 			}
 		}
 	}
 }
 
-static int dyplo_ctl_route_add(struct dyplo_dev *dev, struct dyplo_route_item_t route)
+static int datra_ctl_route_add(struct datra_dev *dev, struct datra_route_item_t route)
 {
 	u32 __iomem* dst_control_addr;
 	u32 dst_route;
@@ -414,13 +414,13 @@ static int dyplo_ctl_route_add(struct dyplo_dev *dev, struct dyplo_route_item_t 
 		pr_debug("%s: Invalid source or destination\n", __func__);
 	    return -EINVAL;
 	}
-	dst_route = ((route.dstNode + 1) << DYPLO_STREAM_ID_WIDTH) | route.dstFifo;
-	dyplo_ctl_route_remove_dst(dev, dst_route);
+	dst_route = ((route.dstNode + 1) << DATRA_STREAM_ID_WIDTH) | route.dstFifo;
+	datra_ctl_route_remove_dst(dev, dst_route);
 	/* Setup route. The PL assumes that "0" is the control node, hence
 	 * the "+1" in config node indices */
 	dst_control_addr = dev->base +
-		(DYPLO_REG_CONTROL_ROUTE_TABLE>>2) +
-		(route.srcNode << DYPLO_STREAM_ID_WIDTH) +
+		(DATRA_REG_CONTROL_ROUTE_TABLE>>2) +
+		(route.srcNode << DATRA_STREAM_ID_WIDTH) +
 		route.srcFifo;
 	pr_debug("%s (%d) @ %p: %x\n", __func__, route.srcNode,
 		dst_control_addr, dst_route);
@@ -429,19 +429,19 @@ static int dyplo_ctl_route_add(struct dyplo_dev *dev, struct dyplo_route_item_t 
 }
 
 
-static int dyplo_ctl_route_add_from_user(struct dyplo_dev *dev, const struct dyplo_route_t __user *uroutes)
+static int datra_ctl_route_add_from_user(struct datra_dev *dev, const struct datra_route_t __user *uroutes)
 {
 	int status = 0;
-	struct dyplo_route_t routes;
+	struct datra_route_t routes;
 	if (copy_from_user(&routes, uroutes, sizeof(routes)))
 		return -EFAULT;
 	while (routes.n_routes--)
 	{
-		union dyplo_route_item_u u;
+		union datra_route_item_u u;
 		status = get_user(u.route, (unsigned int*)routes.proutes);
 		if (status)
 			break;
-		status = dyplo_ctl_route_add(dev, u.route_item);
+		status = datra_ctl_route_add(dev, u.route_item);
 		if (status)
 			break;
 		++routes.proutes;
@@ -449,31 +449,31 @@ static int dyplo_ctl_route_add_from_user(struct dyplo_dev *dev, const struct dyp
 	return status;
 }
 
-static int dyplo_ctl_route_get_from_user(struct dyplo_dev *dev, struct dyplo_route_t __user *uroutes)
+static int datra_ctl_route_get_from_user(struct datra_dev *dev, struct datra_route_t __user *uroutes)
 {
 	int status = 0;
 	int nr = 0;
 	int ctl_index;
 	int queue_index;
-	struct dyplo_route_t routes;
+	struct datra_route_t routes;
 	if (copy_from_user(&routes, uroutes, sizeof(routes)))
 		return -EFAULT;
 	for (ctl_index = 0; ctl_index < dev->number_of_config_devices; ++ctl_index)
 	{
 		u32 __iomem *ctl_route_base = dev->base +
-			(DYPLO_REG_CONTROL_ROUTE_TABLE>>2) +
-			(ctl_index << DYPLO_STREAM_ID_WIDTH);
+			(DATRA_REG_CONTROL_ROUTE_TABLE>>2) +
+			(ctl_index << DATRA_STREAM_ID_WIDTH);
 		const int number_of_fifos =
-			dyplo_number_of_output_queues(&dev->config_devices[ctl_index]);
+			datra_number_of_output_queues(&dev->config_devices[ctl_index]);
 		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
 		{
 			u32 route = ioread32_quick(ctl_route_base + queue_index);
 			if (route)
 			{
-				int src_ctl_index = route >> DYPLO_STREAM_ID_WIDTH;
+				int src_ctl_index = route >> DATRA_STREAM_ID_WIDTH;
 				if (src_ctl_index > 0)
 				{
-					int src_index = route & ( (0x1 << DYPLO_STREAM_ID_WIDTH) - 1);
+					int src_index = route & ( (0x1 << DATRA_STREAM_ID_WIDTH) - 1);
 					if (nr >= routes.n_routes)
 						return nr; /* No room for more, quit */
 					route = (ctl_index << 24) | (queue_index << 16) | ((src_ctl_index-1) << 8) | (src_index);
@@ -489,16 +489,16 @@ static int dyplo_ctl_route_get_from_user(struct dyplo_dev *dev, struct dyplo_rou
 	return status ? status : nr; /* Return number of items found */
 }
 
-static int dyplo_ctl_route_delete(struct dyplo_dev *dev, int ctl_index_to_delete)
+static int datra_ctl_route_delete(struct datra_dev *dev, int ctl_index_to_delete)
 {
 	int queue_index;
 	int ctl_index;
-	const int match = (ctl_index_to_delete + 1) << DYPLO_STREAM_ID_WIDTH;
+	const int match = (ctl_index_to_delete + 1) << DATRA_STREAM_ID_WIDTH;
 	const int number_of_fifos =
-		dyplo_number_of_output_queues(&dev->config_devices[ctl_index_to_delete]);
+		datra_number_of_output_queues(&dev->config_devices[ctl_index_to_delete]);
 	u32 __iomem *ctl_route_base = dev->base +
-		(DYPLO_REG_CONTROL_ROUTE_TABLE>>2) +
-		(ctl_index_to_delete << DYPLO_STREAM_ID_WIDTH);
+		(DATRA_REG_CONTROL_ROUTE_TABLE>>2) +
+		(ctl_index_to_delete << DATRA_STREAM_ID_WIDTH);
 
 	/* Erase outgoing routes */
 	for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
@@ -507,23 +507,23 @@ static int dyplo_ctl_route_delete(struct dyplo_dev *dev, int ctl_index_to_delete
 	/* Erase incoming routes */
 	for (ctl_index = 0; ctl_index < ctl_index_to_delete; ++ctl_index) {
 		const int number_of_fifos =
-			dyplo_number_of_output_queues(&dev->config_devices[ctl_index]);
+			datra_number_of_output_queues(&dev->config_devices[ctl_index]);
 		ctl_route_base = dev->base +
-			(DYPLO_REG_CONTROL_ROUTE_TABLE>>2) +
-			(ctl_index << DYPLO_STREAM_ID_WIDTH);
+			(DATRA_REG_CONTROL_ROUTE_TABLE>>2) +
+			(ctl_index << DATRA_STREAM_ID_WIDTH);
 		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index) {
-			if ((ioread32_quick(ctl_route_base + queue_index) & (0xFFFF << DYPLO_STREAM_ID_WIDTH) ) == match)
+			if ((ioread32_quick(ctl_route_base + queue_index) & (0xFFFF << DATRA_STREAM_ID_WIDTH) ) == match)
 				iowrite32_quick(0, ctl_route_base + queue_index);
 		}
 	}
 	for (ctl_index = ctl_index_to_delete+1; ctl_index < dev->number_of_config_devices; ++ctl_index) {
 		const int number_of_fifos =
-			dyplo_number_of_output_queues(&dev->config_devices[ctl_index]);
+			datra_number_of_output_queues(&dev->config_devices[ctl_index]);
 		ctl_route_base = dev->base +
-			(DYPLO_REG_CONTROL_ROUTE_TABLE>>2) +
-			(ctl_index << DYPLO_STREAM_ID_WIDTH);
+			(DATRA_REG_CONTROL_ROUTE_TABLE>>2) +
+			(ctl_index << DATRA_STREAM_ID_WIDTH);
 		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index) {
-			if ((ioread32_quick(ctl_route_base + queue_index) & (0xFFFF << DYPLO_STREAM_ID_WIDTH) ) == match)
+			if ((ioread32_quick(ctl_route_base + queue_index) & (0xFFFF << DATRA_STREAM_ID_WIDTH) ) == match)
 				iowrite32_quick(0, ctl_route_base + queue_index);
 		}
 	}
@@ -531,7 +531,7 @@ static int dyplo_ctl_route_delete(struct dyplo_dev *dev, int ctl_index_to_delete
 }
 
 
-static int dyplo_ctl_route_single_delete(struct dyplo_dev *dev, struct dyplo_route_item_t route)
+static int datra_ctl_route_single_delete(struct datra_dev *dev, struct datra_route_item_t route)
 {
 	u32 dst_route;
 
@@ -543,30 +543,30 @@ static int dyplo_ctl_route_single_delete(struct dyplo_dev *dev, struct dyplo_rou
 		pr_debug("%s: Invalid source or destination\n", __func__);
 	    return -EINVAL;
 	}
-	dst_route = ((route.dstNode + 1) << DYPLO_STREAM_ID_WIDTH) | route.dstFifo;
-	dyplo_ctl_route_remove_dst(dev, dst_route);
+	dst_route = ((route.dstNode + 1) << DATRA_STREAM_ID_WIDTH) | route.dstFifo;
+	datra_ctl_route_remove_dst(dev, dst_route);
 	return 0;
 }
 
 
-static int dyplo_ctl_route_clear(struct dyplo_dev *dev)
+static int datra_ctl_route_clear(struct datra_dev *dev)
 {
 	int ctl_index;
 	int queue_index;
 
-	u32 __iomem *ctl_route_base = dev->base + (DYPLO_REG_CONTROL_ROUTE_TABLE>>2);
+	u32 __iomem *ctl_route_base = dev->base + (DATRA_REG_CONTROL_ROUTE_TABLE>>2);
 	for (ctl_index = 0; ctl_index < dev->number_of_config_devices; ++ctl_index)	{
 		/* Remove outgoing routes */
 		const int number_of_fifos =
-			dyplo_number_of_output_queues(&dev->config_devices[ctl_index]);
+			datra_number_of_output_queues(&dev->config_devices[ctl_index]);
 		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
 			iowrite32_quick(0, ctl_route_base + queue_index);
-		ctl_route_base += (1 << DYPLO_STREAM_ID_WIDTH);
+		ctl_route_base += (1 << DATRA_STREAM_ID_WIDTH);
 	}
 	return 0;
 }
 
-static long dyplo_ctl_io64(struct dyplo_dev *dev, unsigned int reg, unsigned int cmd, void __user *user_key)
+static long datra_ctl_io64(struct datra_dev *dev, unsigned int reg, unsigned int cmd, void __user *user_key)
 {
 	int status;
 	u32 key[2];
@@ -579,12 +579,12 @@ static long dyplo_ctl_io64(struct dyplo_dev *dev, unsigned int reg, unsigned int
 		status = __copy_from_user(key, user_key, sizeof(key));
 		if (status)
 			return status;
-		dyplo_reg_write_quick(dev->base, reg, key[0]);
-		dyplo_reg_write_quick(dev->base, reg + 4, key[1]);
+		datra_reg_write_quick(dev->base, reg, key[0]);
+		datra_reg_write_quick(dev->base, reg + 4, key[1]);
 	}
 	if (_IOC_DIR(cmd) & _IOC_READ) {
-		key[0] = dyplo_reg_read_quick(dev->base, reg);
-		key[1] = dyplo_reg_read_quick(dev->base, reg + 4);
+		key[0] = datra_reg_read_quick(dev->base, reg);
+		key[1] = datra_reg_read_quick(dev->base, reg + 4);
 		status = __copy_to_user(user_key, key, sizeof(key));
 		if (status)
 			return status;
@@ -592,7 +592,7 @@ static long dyplo_ctl_io64(struct dyplo_dev *dev, unsigned int reg, unsigned int
 	return 0;
 }
 
-static long dyplo_ctl_static_id(struct dyplo_dev *dev, unsigned int cmd, unsigned int __user *user_id)
+static long datra_ctl_static_id(struct datra_dev *dev, unsigned int cmd, unsigned int __user *user_id)
 {
 	int status;
 	unsigned int data;
@@ -601,14 +601,14 @@ static long dyplo_ctl_static_id(struct dyplo_dev *dev, unsigned int cmd, unsigne
 		return -EINVAL;
 
 	if (_IOC_DIR(cmd) & _IOC_READ) {
-		data = dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_STATIC_ID);
+		data = datra_reg_read_quick(dev->base, DATRA_REG_CONTROL_STATIC_ID);
 		status = __put_user(data, user_id);
 		if (status)
 			return status;
 		if (!data) {
-			/* When "0" is returned, check the dyplo version to see
-			 * if the Dyplo version is before 2015.1.4 */
-			data = dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_DYPLO_VERSION);
+			/* When "0" is returned, check the datra version to see
+			 * if the Datra version is before 2015.1.4 */
+			data = datra_reg_read_quick(dev->base, DATRA_REG_CONTROL_DATRA_VERSION);
 			if (data < ((2015<<16) | 0x0104))
 				return -EIO;
 		}
@@ -616,7 +616,7 @@ static long dyplo_ctl_static_id(struct dyplo_dev *dev, unsigned int cmd, unsigne
 	return 0;
 }
 
-static int dyplo_get_icap_device_index(struct dyplo_dev *dev)
+static int datra_get_icap_device_index(struct datra_dev *dev)
 {
 	u8 index = dev->icap_device_index;
 
@@ -625,12 +625,12 @@ static int dyplo_get_icap_device_index(struct dyplo_dev *dev)
 	return index;
 }
 
-static long dyplo_ctl_ioctl_impl(struct dyplo_dev *dev, unsigned int cmd, unsigned long arg)
+static long datra_ctl_ioctl_impl(struct datra_dev *dev, unsigned int cmd, unsigned long arg)
 {
 	int status;
 
 	/* pr_debug("%s(%x, %lx)\n", __func__, cmd, arg); */
-	if (_IOC_TYPE(cmd) != DYPLO_IOC_MAGIC)
+	if (_IOC_TYPE(cmd) != DATRA_IOC_MAGIC)
 		return -ENOTTY;
 
 	/* Verify read/write access to user memory early on */
@@ -654,92 +654,92 @@ static long dyplo_ctl_ioctl_impl(struct dyplo_dev *dev, unsigned int cmd, unsign
 
 	switch (_IOC_NR(cmd))
 	{
-		case DYPLO_IOC_ROUTE_CLEAR: /* Remove all routes */
-			status = dyplo_ctl_route_clear(dev);
+		case DATRA_IOC_ROUTE_CLEAR: /* Remove all routes */
+			status = datra_ctl_route_clear(dev);
 			break;
-		case DYPLO_IOC_ROUTE_SET: /* Set routes. */
-			status = dyplo_ctl_route_add_from_user(dev, (struct dyplo_route_t __user *)arg);
+		case DATRA_IOC_ROUTE_SET: /* Set routes. */
+			status = datra_ctl_route_add_from_user(dev, (struct datra_route_t __user *)arg);
 			break;
-		case DYPLO_IOC_ROUTE_GET: /* Get routes. */
-			status = dyplo_ctl_route_get_from_user(dev, (struct dyplo_route_t __user *)arg);
+		case DATRA_IOC_ROUTE_GET: /* Get routes. */
+			status = datra_ctl_route_get_from_user(dev, (struct datra_route_t __user *)arg);
 			break;
-		case DYPLO_IOC_ROUTE_TELL: /* Tell route: Adds a single route entry */
+		case DATRA_IOC_ROUTE_TELL: /* Tell route: Adds a single route entry */
 		{
-			union dyplo_route_item_u u;
+			union datra_route_item_u u;
 			u.route = arg;
-			status = dyplo_ctl_route_add(dev, u.route_item);
+			status = datra_ctl_route_add(dev, u.route_item);
 			break;
 		}
-		case DYPLO_IOC_ROUTE_DELETE: /* Remove routes to a node */
-			status = dyplo_ctl_route_delete(dev, arg);
+		case DATRA_IOC_ROUTE_DELETE: /* Remove routes to a node */
+			status = datra_ctl_route_delete(dev, arg);
 			break;
-		case DYPLO_IOC_ROUTE_SINGLE_DELETE: /* Remove single route */
+		case DATRA_IOC_ROUTE_SINGLE_DELETE: /* Remove single route */
 		{
-			union dyplo_route_item_u u;
+			union datra_route_item_u u;
 			u.route = arg;
-			status = dyplo_ctl_route_single_delete(dev, u.route_item);
+			status = datra_ctl_route_single_delete(dev, u.route_item);
 			break;
 		}
-		case DYPLO_IOC_BACKPLANE_STATUS:
-			status = dyplo_reg_read_quick(dev->base, DYPLO_REG_BACKPLANE_ENABLE_STATUS) >> 1;
+		case DATRA_IOC_BACKPLANE_STATUS:
+			status = datra_reg_read_quick(dev->base, DATRA_REG_BACKPLANE_ENABLE_STATUS) >> 1;
 			break;
-		case DYPLO_IOC_BACKPLANE_ENABLE:
-			dyplo_reg_write_quick(dev->base, DYPLO_REG_BACKPLANE_ENABLE_SET, arg << 1);
-			status = dyplo_reg_read_quick(dev->base, DYPLO_REG_BACKPLANE_ENABLE_STATUS) >> 1;
+		case DATRA_IOC_BACKPLANE_ENABLE:
+			datra_reg_write_quick(dev->base, DATRA_REG_BACKPLANE_ENABLE_SET, arg << 1);
+			status = datra_reg_read_quick(dev->base, DATRA_REG_BACKPLANE_ENABLE_STATUS) >> 1;
 			break;
-		case DYPLO_IOC_BACKPLANE_DISABLE:
-			dyplo_reg_write_quick(dev->base, DYPLO_REG_BACKPLANE_ENABLE_CLR, arg << 1);
-			status = dyplo_reg_read_quick(dev->base, DYPLO_REG_BACKPLANE_ENABLE_STATUS) >> 1;
+		case DATRA_IOC_BACKPLANE_DISABLE:
+			datra_reg_write_quick(dev->base, DATRA_REG_BACKPLANE_ENABLE_CLR, arg << 1);
+			status = datra_reg_read_quick(dev->base, DATRA_REG_BACKPLANE_ENABLE_STATUS) >> 1;
 			break;
-		case DYPLO_IOC_ICAP_INDEX_QUERY:
-			status = dyplo_get_icap_device_index(dev);
+		case DATRA_IOC_ICAP_INDEX_QUERY:
+			status = datra_get_icap_device_index(dev);
 			break;
-		case DYPLO_IOC_LICENSE_KEY:
-			status = dyplo_ctl_io64(dev, DYPLO_REG_CONTROL_LICENSE_KEY0, cmd, (void __user *)arg);
+		case DATRA_IOC_LICENSE_KEY:
+			status = datra_ctl_io64(dev, DATRA_REG_CONTROL_LICENSE_KEY0, cmd, (void __user *)arg);
 			break;
-		case DYPLO_IOC_STATIC_ID:
-			status = dyplo_ctl_static_id(dev, cmd, (void __user *)arg);
+		case DATRA_IOC_STATIC_ID:
+			status = datra_ctl_static_id(dev, cmd, (void __user *)arg);
 			break;
-		case DYPLO_IOC_DEVICE_ID:
-			status = dyplo_ctl_io64(dev, DYPLO_REG_CONTROL_DEVICE_ID0, cmd, (void __user *)arg);
+		case DATRA_IOC_DEVICE_ID:
+			status = datra_ctl_io64(dev, DATRA_REG_CONTROL_DEVICE_ID0, cmd, (void __user *)arg);
 			break;
-		case DYPLO_IOC_LICENSE_INFO:
-			status = dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_LICENSE_INFO);
+		case DATRA_IOC_LICENSE_INFO:
+			status = datra_reg_read_quick(dev->base, DATRA_REG_CONTROL_LICENSE_INFO);
 			break;
 		default:
-			printk(KERN_WARNING "DYPLO ioctl unknown command: %d (arg=0x%lx).\n", _IOC_NR(cmd), arg);
+			printk(KERN_WARNING "DATRA ioctl unknown command: %d (arg=0x%lx).\n", _IOC_NR(cmd), arg);
 			status = -ENOTTY;
 	}
 
 	return status;
 }
 
-static long dyplo_ctl_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+static long datra_ctl_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
-	struct dyplo_dev *dev = filp->private_data;
+	struct datra_dev *dev = filp->private_data;
 	if (unlikely(dev == NULL))
 		return -ENODEV;
 	pr_debug("%s cmd=%#x (%d) arg=%#lx\n", __func__, cmd, _IOC_NR(cmd), arg);
-	return dyplo_ctl_ioctl_impl(dev, cmd, arg);
+	return datra_ctl_ioctl_impl(dev, cmd, arg);
 }
 
-static const struct file_operations dyplo_ctl_fops =
+static const struct file_operations datra_ctl_fops =
 {
 	.owner = THIS_MODULE,
-	.read = dyplo_ctl_read,
-	.write = dyplo_ctl_write,
-	.llseek = dyplo_ctl_llseek,
-	.mmap = dyplo_ctl_mmap,
-	.unlocked_ioctl = dyplo_ctl_ioctl,
-	.open = dyplo_ctl_open,
-	.release = dyplo_ctl_release,
+	.read = datra_ctl_read,
+	.write = datra_ctl_write,
+	.llseek = datra_ctl_llseek,
+	.mmap = datra_ctl_mmap,
+	.unlocked_ioctl = datra_ctl_ioctl,
+	.open = datra_ctl_open,
+	.release = datra_ctl_release,
 };
 
-static int dyplo_cfg_open(struct inode *inode, struct file *filp)
+static int datra_cfg_open(struct inode *inode, struct file *filp)
 {
-	struct dyplo_dev *dev =  container_of(inode->i_cdev, struct dyplo_dev, cdev_config);
+	struct datra_dev *dev =  container_of(inode->i_cdev, struct datra_dev, cdev_config);
 	int index = iminor(inode) - 1;
-	struct dyplo_config_dev *cfg_dev = &dev->config_devices[index];
+	struct datra_config_dev *cfg_dev = &dev->config_devices[index];
 	int status = 0;
 	mode_t rw_mode = filp->f_mode & (FMODE_READ | FMODE_WRITE);
 
@@ -758,10 +758,10 @@ exit_open:
 	return status;
 }
 
-static int dyplo_cfg_release(struct inode *inode, struct file *filp)
+static int datra_cfg_release(struct inode *inode, struct file *filp)
 {
-	struct dyplo_config_dev *cfg_dev = filp->private_data;
-	struct dyplo_dev *dev = cfg_dev->parent;
+	struct datra_config_dev *cfg_dev = filp->private_data;
+	struct datra_dev *dev = cfg_dev->parent;
 
 	if (down_interruptible(&dev->fop_sem))
 		return -ERESTARTSYS;
@@ -770,23 +770,23 @@ static int dyplo_cfg_release(struct inode *inode, struct file *filp)
 	return 0;
 }
 
-static ssize_t dyplo_cfg_read(struct file *filp, char __user *buf, size_t count,
+static ssize_t datra_cfg_read(struct file *filp, char __user *buf, size_t count,
                 loff_t *f_pos)
 {
-	struct dyplo_config_dev *cfg_dev = filp->private_data;
+	struct datra_config_dev *cfg_dev = filp->private_data;
 
-	return dyplo_generic_read(cfg_dev->base, buf, count, f_pos);
+	return datra_generic_read(cfg_dev->base, buf, count, f_pos);
 }
 
-static ssize_t dyplo_cfg_write (struct file *filp, const char __user *buf, size_t count,
+static ssize_t datra_cfg_write (struct file *filp, const char __user *buf, size_t count,
 	loff_t *f_pos)
 {
-	struct dyplo_config_dev *cfg_dev = filp->private_data;
+	struct datra_config_dev *cfg_dev = filp->private_data;
 
-	return dyplo_generic_write(cfg_dev->base, buf, count, f_pos);
+	return datra_generic_write(cfg_dev->base, buf, count, f_pos);
 }
 
-loff_t dyplo_cfg_llseek(struct file *filp, loff_t off, int whence)
+loff_t datra_cfg_llseek(struct file *filp, loff_t off, int whence)
 {
     loff_t newpos;
 
@@ -800,85 +800,85 @@ loff_t dyplo_cfg_llseek(struct file *filp, loff_t off, int whence)
         break;
 
       case 2: /* SEEK_END */
-        newpos = DYPLO_CONFIG_SIZE + off;
+        newpos = DATRA_CONFIG_SIZE + off;
         break;
 
       default: /* can't happen */
         return -EINVAL;
     }
     if (newpos < 0) return -EINVAL;
-    if (newpos > DYPLO_CONFIG_SIZE) return -EINVAL;
+    if (newpos > DATRA_CONFIG_SIZE) return -EINVAL;
     filp->f_pos = newpos;
     return newpos;
 }
 
-static int dyplo_cfg_mmap(struct file *filp, struct vm_area_struct *vma)
+static int datra_cfg_mmap(struct file *filp, struct vm_area_struct *vma)
 {
-	struct dyplo_config_dev *cfg_dev = filp->private_data;
+	struct datra_config_dev *cfg_dev = filp->private_data;
 
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 	if (cfg_dev->parent->mem)
 		return vm_iomap_memory(vma,
-			cfg_dev->parent->mem->start + dyplo_get_config_mem_offset(cfg_dev),
-			DYPLO_CONFIG_SIZE);
+			cfg_dev->parent->mem->start + datra_get_config_mem_offset(cfg_dev),
+			DATRA_CONFIG_SIZE);
 	else
 		return vm_iomap_memory(vma,
 			virt_to_phys(cfg_dev->base),
-			DYPLO_CONFIG_SIZE);
+			DATRA_CONFIG_SIZE);
 }
 
-static long dyplo_cfg_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+static long datra_cfg_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
-	struct dyplo_config_dev *cfg_dev = filp->private_data;
+	struct datra_config_dev *cfg_dev = filp->private_data;
 	int status;
 
 	pr_debug("%s cmd=%#x (%d) arg=%#lx\n", __func__, cmd, _IOC_NR(cmd), arg);
 
 	if (unlikely(cfg_dev == NULL))
 		return -ENODEV;
-	if (_IOC_TYPE(cmd) != DYPLO_IOC_MAGIC)
+	if (_IOC_TYPE(cmd) != DATRA_IOC_MAGIC)
 		return -ENOTTY;
 
 	switch (_IOC_NR(cmd))
 	{
-		case DYPLO_IOC_ROUTE_CLEAR:
-		case DYPLO_IOC_ROUTE_DELETE: /* Remove routes to this node */
-			status = dyplo_ctl_route_delete(cfg_dev->parent, dyplo_get_config_index(cfg_dev));
+		case DATRA_IOC_ROUTE_CLEAR:
+		case DATRA_IOC_ROUTE_DELETE: /* Remove routes to this node */
+			status = datra_ctl_route_delete(cfg_dev->parent, datra_get_config_index(cfg_dev));
 			break;
-		case DYPLO_IOC_ROUTE_QUERY_ID:
-			status = dyplo_get_config_index(cfg_dev);
+		case DATRA_IOC_ROUTE_QUERY_ID:
+			status = datra_get_config_index(cfg_dev);
 			break;
-		case DYPLO_IOC_BACKPLANE_STATUS:
+		case DATRA_IOC_BACKPLANE_STATUS:
 			{
-				int index = dyplo_get_config_index(cfg_dev);
-				status = dyplo_reg_read_quick(cfg_dev->parent->base, DYPLO_REG_BACKPLANE_ENABLE_STATUS) >> 1;
+				int index = datra_get_config_index(cfg_dev);
+				status = datra_reg_read_quick(cfg_dev->parent->base, DATRA_REG_BACKPLANE_ENABLE_STATUS) >> 1;
 				status &= (1 << index);
 			}
 			break;
-		case DYPLO_IOC_BACKPLANE_ENABLE:
+		case DATRA_IOC_BACKPLANE_ENABLE:
 			{
-				int index = dyplo_get_config_index(cfg_dev);
-				dyplo_reg_write_quick(cfg_dev->parent->base, DYPLO_REG_BACKPLANE_ENABLE_SET, 1 << (index+1));
-				status = dyplo_reg_read_quick(cfg_dev->parent->base, DYPLO_REG_BACKPLANE_ENABLE_STATUS) >> 1;
+				int index = datra_get_config_index(cfg_dev);
+				datra_reg_write_quick(cfg_dev->parent->base, DATRA_REG_BACKPLANE_ENABLE_SET, 1 << (index+1));
+				status = datra_reg_read_quick(cfg_dev->parent->base, DATRA_REG_BACKPLANE_ENABLE_STATUS) >> 1;
 			}
 			break;
-		case DYPLO_IOC_BACKPLANE_DISABLE:
+		case DATRA_IOC_BACKPLANE_DISABLE:
 			{
-				int index = dyplo_get_config_index(cfg_dev);
-				dyplo_reg_write_quick(cfg_dev->parent->base, DYPLO_REG_BACKPLANE_ENABLE_CLR, 1 << (index+1));
-				status = dyplo_reg_read_quick(cfg_dev->parent->base, DYPLO_REG_BACKPLANE_ENABLE_STATUS) >> 1;
+				int index = datra_get_config_index(cfg_dev);
+				datra_reg_write_quick(cfg_dev->parent->base, DATRA_REG_BACKPLANE_ENABLE_CLR, 1 << (index+1));
+				status = datra_reg_read_quick(cfg_dev->parent->base, DATRA_REG_BACKPLANE_ENABLE_STATUS) >> 1;
 			}
 			break;
-		case DYPLO_IOC_RESET_FIFO_WRITE:
-			dyplo_reg_write_quick(cfg_dev->control_base, DYPLO_REG_NODE_RESET_FIFOS, arg);
+		case DATRA_IOC_RESET_FIFO_WRITE:
+			datra_reg_write_quick(cfg_dev->control_base, DATRA_REG_NODE_RESET_FIFOS, arg);
 			status = 0;
 			break;
-		case DYPLO_IOC_RESET_FIFO_READ:
-			dyplo_reg_write_quick(cfg_dev->control_base, DYPLO_REG_FIFO_RESET_READ, arg);
+		case DATRA_IOC_RESET_FIFO_READ:
+			datra_reg_write_quick(cfg_dev->control_base, DATRA_REG_FIFO_RESET_READ, arg);
 			status = 0;
 			break;
 		default:
-			printk(KERN_WARNING "DYPLO ioctl unknown command: %d (arg=0x%lx).\n", _IOC_NR(cmd), arg);
+			printk(KERN_WARNING "DATRA ioctl unknown command: %d (arg=0x%lx).\n", _IOC_NR(cmd), arg);
 			status = -ENOTTY;
 	}
 
@@ -886,69 +886,69 @@ static long dyplo_cfg_ioctl(struct file *filp, unsigned int cmd, unsigned long a
 	return status;
 }
 
-static const struct file_operations dyplo_cfg_fops =
+static const struct file_operations datra_cfg_fops =
 {
 	.owner = THIS_MODULE,
-	.read = dyplo_cfg_read,
-	.write = dyplo_cfg_write,
-	.llseek = dyplo_cfg_llseek,
-	.mmap = dyplo_cfg_mmap,
-	.unlocked_ioctl = dyplo_cfg_ioctl,
-	.open = dyplo_cfg_open,
-	.release = dyplo_cfg_release,
+	.read = datra_cfg_read,
+	.write = datra_cfg_write,
+	.llseek = datra_cfg_llseek,
+	.mmap = datra_cfg_mmap,
+	.unlocked_ioctl = datra_cfg_ioctl,
+	.open = datra_cfg_open,
+	.release = datra_cfg_release,
 };
 
 /* Utilities for fifo functions */
 
-static int __iomem * dyplo_fifo_memory_location(struct dyplo_fifo_dev *fifo_dev)
+static int __iomem * datra_fifo_memory_location(struct datra_fifo_dev *fifo_dev)
 {
-	struct dyplo_config_dev *cfg_dev = fifo_dev->config_parent;
+	struct datra_config_dev *cfg_dev = fifo_dev->config_parent;
 	return
-		cfg_dev->base + (fifo_dev->index * (DYPLO_FIFO_MEMORY_SIZE>>2));
+		cfg_dev->base + (fifo_dev->index * (DATRA_FIFO_MEMORY_SIZE>>2));
 }
 
-static bool dyplo_fifo_write_usersignal(struct dyplo_fifo_dev *fifo_dev, u16 user_signal)
+static bool datra_fifo_write_usersignal(struct datra_fifo_dev *fifo_dev, u16 user_signal)
 {
 	__iomem u32 *control_base_us =
 		fifo_dev->config_parent->control_base +
-		(DYPLO_REG_FIFO_WRITE_USERSIGNAL_BASE>>2) +
+		(DATRA_REG_FIFO_WRITE_USERSIGNAL_BASE>>2) +
 		fifo_dev->index;
 	iowrite32((u32)user_signal, control_base_us);
 	/* Test if user signals are supported by reading back the value */
 	return (u16)ioread32_quick(control_base_us) == user_signal;
 }
 
-static u32 dyplo_fifo_read_level(struct dyplo_fifo_dev *fifo_dev)
+static u32 datra_fifo_read_level(struct datra_fifo_dev *fifo_dev)
 {
-	return dyplo_reg_read_quick_index(
+	return datra_reg_read_quick_index(
 		fifo_dev->config_parent->control_base,
-		DYPLO_REG_FIFO_READ_LEVEL_BASE,
+		DATRA_REG_FIFO_READ_LEVEL_BASE,
 		fifo_dev->index);
 }
 
-static void dyplo_fifo_read_enable_interrupt(struct dyplo_fifo_dev *fifo_dev, int thd)
+static void datra_fifo_read_enable_interrupt(struct datra_fifo_dev *fifo_dev, int thd)
 {
 	int index = fifo_dev->index;
 	int __iomem *control_base =
 		fifo_dev->config_parent->control_base;
-	if (thd > (DYPLO_FIFO_READ_SIZE*2)/4)
-		thd = (DYPLO_FIFO_READ_SIZE*2)/4;
+	if (thd > (DATRA_FIFO_READ_SIZE*2)/4)
+		thd = (DATRA_FIFO_READ_SIZE*2)/4;
 	else if (thd)
 		--thd; /* Treshold of "15" will alert when 16 words are present in the FIFO */
-	iowrite32(thd, control_base + (DYPLO_REG_FIFO_READ_THD_BASE>>2) + index);
+	iowrite32(thd, control_base + (DATRA_REG_FIFO_READ_THD_BASE>>2) + index);
 	/* v2 uses upper 16 bits of shared IRQ registers */
 	pr_debug("%s index=%d thd=%d v2\n", __func__, index, thd);
-	iowrite32(BIT(index + 16), control_base + (DYPLO_REG_FIFO_IRQ_SET>>2));
+	iowrite32(BIT(index + 16), control_base + (DATRA_REG_FIFO_IRQ_SET>>2));
 }
 
-static int dyplo_fifo_read_open(struct inode *inode, struct file *filp)
+static int datra_fifo_read_open(struct inode *inode, struct file *filp)
 {
 	int result = 0;
-	struct dyplo_fifo_control_dev *fifo_ctl_dev =
-		container_of(inode->i_cdev, struct dyplo_fifo_control_dev, cdev_fifo_read);
+	struct datra_fifo_control_dev *fifo_ctl_dev =
+		container_of(inode->i_cdev, struct datra_fifo_control_dev, cdev_fifo_read);
 	int index = inode->i_rdev - fifo_ctl_dev->devt_first_fifo_device;
-	struct dyplo_fifo_dev *fifo_dev = &fifo_ctl_dev->fifo_devices[index];
-	struct dyplo_dev* dev = fifo_ctl_dev->config_parent->parent;
+	struct datra_fifo_dev *fifo_dev = &fifo_ctl_dev->fifo_devices[index];
+	struct datra_dev* dev = fifo_ctl_dev->config_parent->parent;
 
 	pr_debug("%s index=%d mode=%#x flags=%#x i-devt=%u d=%u f=%u\n", __func__,
 		index, filp->f_mode, filp->f_flags,
@@ -962,7 +962,7 @@ static int dyplo_fifo_read_open(struct inode *inode, struct file *filp)
 		result = -EBUSY;
 		goto error;
 	}
-	fifo_dev->transfer_buffer = kmalloc(DYPLO_FIFO_READ_MAX_BURST_SIZE, GFP_KERNEL);
+	fifo_dev->transfer_buffer = kmalloc(DATRA_FIFO_READ_MAX_BURST_SIZE, GFP_KERNEL);
 	if (unlikely(fifo_dev->transfer_buffer == NULL)) {
 		result = -ENOMEM;
 		goto error;
@@ -977,10 +977,10 @@ error:
 	return result;
 }
 
-static int dyplo_fifo_read_release(struct inode *inode, struct file *filp)
+static int datra_fifo_read_release(struct inode *inode, struct file *filp)
 {
-	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
-	struct dyplo_dev* dev = fifo_dev->config_parent->parent;
+	struct datra_fifo_dev *fifo_dev = filp->private_data;
+	struct datra_dev* dev = fifo_dev->config_parent->parent;
 
 	pr_debug("%s index=%d\n", __func__, fifo_dev->index);
 	if (down_interruptible(&dev->fop_sem))
@@ -992,11 +992,11 @@ static int dyplo_fifo_read_release(struct inode *inode, struct file *filp)
 	return 0;
 }
 
-static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t count,
+static ssize_t datra_fifo_read_read(struct file *filp, char __user *buf, size_t count,
                 loff_t *f_pos)
 {
-	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
-	int __iomem *mapped_memory = dyplo_fifo_memory_location(fifo_dev);
+	struct datra_fifo_dev *fifo_dev = filp->private_data;
+	int __iomem *mapped_memory = datra_fifo_memory_location(fifo_dev);
 	int status = 0;
 	size_t len = 0;
 	pr_debug("%s(%u)\n", __func__, (unsigned int)count);
@@ -1019,7 +1019,7 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 		u16 user_signal;
 		size_t bytes;
 		if (filp->f_flags & O_NONBLOCK) {
-			words_available = dyplo_fifo_read_level(fifo_dev);
+			words_available = datra_fifo_read_level(fifo_dev);
 			user_signal = words_available >> 16;
 			words_available &= 0xFFFF; /* Lower 16-bits only */
 			if (!words_available) {
@@ -1040,7 +1040,7 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 			DEFINE_WAIT(wait);
 			for (;;) {
 				prepare_to_wait(&fifo_dev->fifo_wait_queue, &wait, TASK_INTERRUPTIBLE);
-				words_available = dyplo_fifo_read_level(fifo_dev);
+				words_available = datra_fifo_read_level(fifo_dev);
 				user_signal = words_available >> 16;
 				words_available &= 0xFFFF;
 				if (words_available) {
@@ -1053,7 +1053,7 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 					break; /* Done waiting */
 				}
 				if (!signal_pending(current)) {
-					dyplo_fifo_read_enable_interrupt(fifo_dev, count >> 2);
+					datra_fifo_read_enable_interrupt(fifo_dev, count >> 2);
 					schedule();
 					continue;
 				}
@@ -1067,8 +1067,8 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 		do {
 			unsigned int words;
 			bytes = words_available << 2;
-			if (bytes > DYPLO_FIFO_READ_MAX_BURST_SIZE)
-				bytes = DYPLO_FIFO_READ_MAX_BURST_SIZE;
+			if (bytes > DATRA_FIFO_READ_MAX_BURST_SIZE)
+				bytes = DATRA_FIFO_READ_MAX_BURST_SIZE;
 			if (count < bytes)
 				bytes = count;
 			words = bytes >> 2;
@@ -1096,17 +1096,17 @@ error:
 	return status;
 }
 
-static unsigned int dyplo_fifo_read_poll(struct file *filp, poll_table *wait)
+static unsigned int datra_fifo_read_poll(struct file *filp, poll_table *wait)
 {
-	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
+	struct datra_fifo_dev *fifo_dev = filp->private_data;
 	unsigned int mask;
 
 	poll_wait(filp, &fifo_dev->fifo_wait_queue, wait);
-	if (dyplo_fifo_read_level(fifo_dev) & 0xFFFF)
+	if (datra_fifo_read_level(fifo_dev) & 0xFFFF)
 		mask = (POLLIN | POLLRDNORM); /* Data available */
 	else {
 		/* Set IRQ to occur on user-defined treshold (default=1) */
-		dyplo_fifo_read_enable_interrupt(fifo_dev, fifo_dev->poll_treshold);
+		datra_fifo_read_enable_interrupt(fifo_dev, fifo_dev->poll_treshold);
 		mask = 0;
 	}
 
@@ -1115,48 +1115,48 @@ static unsigned int dyplo_fifo_read_poll(struct file *filp, poll_table *wait)
 	return mask;
 }
 
-static int dyplo_fifo_rw_get_route_id(struct dyplo_fifo_dev *fifo_dev)
+static int datra_fifo_rw_get_route_id(struct datra_fifo_dev *fifo_dev)
 {
-	return dyplo_get_config_index(fifo_dev->config_parent) |
+	return datra_get_config_index(fifo_dev->config_parent) |
 		(fifo_dev->index << 8);
 }
 
-static int dyplo_fifo_rw_add_route(struct dyplo_fifo_dev *fifo_dev, int source, int dest)
+static int datra_fifo_rw_add_route(struct datra_fifo_dev *fifo_dev, int source, int dest)
 {
-	struct dyplo_route_item_t route;
+	struct datra_route_item_t route;
 	route.srcFifo = (source >> 8) & 0xFF;
 	route.srcNode = source & 0xFF;
 	route.dstFifo = (dest >> 8) & 0xFF;
 	route.dstNode = dest & 0xFF;
-	dyplo_ctl_route_add(fifo_dev->config_parent->parent, route);
+	datra_ctl_route_add(fifo_dev->config_parent->parent, route);
 	return 0;
 }
 
-static long dyplo_fifo_rw_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+static long datra_fifo_rw_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
-	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
+	struct datra_fifo_dev *fifo_dev = filp->private_data;
 	if (unlikely(fifo_dev == NULL))
 		return -ENODEV;
 
 	pr_debug("%s cmd=%#x (%d) arg=%#lx\n", __func__, cmd, _IOC_NR(cmd), arg);
-	if (_IOC_TYPE(cmd) != DYPLO_IOC_MAGIC)
+	if (_IOC_TYPE(cmd) != DATRA_IOC_MAGIC)
 		return -ENOTTY;
 
 	switch (_IOC_NR(cmd))
 	{
-		case DYPLO_IOC_ROUTE_QUERY_ID:
-			return dyplo_fifo_rw_get_route_id(fifo_dev);
-		case DYPLO_IOC_ROUTE_TELL_TO_LOGIC:
+		case DATRA_IOC_ROUTE_QUERY_ID:
+			return datra_fifo_rw_get_route_id(fifo_dev);
+		case DATRA_IOC_ROUTE_TELL_TO_LOGIC:
 			if ((filp->f_mode & FMODE_WRITE) == 0)
 				return -ENOTTY; /* Cannot route from this node */
-			return dyplo_fifo_rw_add_route(fifo_dev, dyplo_fifo_rw_get_route_id(fifo_dev), arg);
-		case DYPLO_IOC_ROUTE_TELL_FROM_LOGIC:
+			return datra_fifo_rw_add_route(fifo_dev, datra_fifo_rw_get_route_id(fifo_dev), arg);
+		case DATRA_IOC_ROUTE_TELL_FROM_LOGIC:
 			if ((filp->f_mode & FMODE_READ) == 0)
 				return -ENOTTY; /* Cannot route to this node */
-			return dyplo_fifo_rw_add_route(fifo_dev, arg, dyplo_fifo_rw_get_route_id(fifo_dev));
-		case DYPLO_IOC_TRESHOLD_QUERY:
+			return datra_fifo_rw_add_route(fifo_dev, arg, datra_fifo_rw_get_route_id(fifo_dev));
+		case DATRA_IOC_TRESHOLD_QUERY:
 			return fifo_dev->poll_treshold;
-		case DYPLO_IOC_TRESHOLD_TELL:
+		case DATRA_IOC_TRESHOLD_TELL:
 			if (arg < 1)
 				arg = 1;
 			else if (arg > 192)
@@ -1165,23 +1165,23 @@ static long dyplo_fifo_rw_ioctl(struct file *filp, unsigned int cmd, unsigned lo
 			return 0;
 		/* ioctl value or type does not matter, this always resets the
 		 * associated fifo in the hardware. */
-		case DYPLO_IOC_RESET_FIFO_WRITE:
-		case DYPLO_IOC_RESET_FIFO_READ:
+		case DATRA_IOC_RESET_FIFO_WRITE:
+		case DATRA_IOC_RESET_FIFO_READ:
 			if ((filp->f_mode & FMODE_WRITE) != 0)
-				dyplo_reg_write_quick(fifo_dev->config_parent->control_base,
-					DYPLO_REG_FIFO_RESET_WRITE, 1 << fifo_dev->index);
+				datra_reg_write_quick(fifo_dev->config_parent->control_base,
+					DATRA_REG_FIFO_RESET_WRITE, 1 << fifo_dev->index);
 			else
-				dyplo_reg_write_quick(fifo_dev->config_parent->control_base,
-					DYPLO_REG_FIFO_RESET_READ, 1 << fifo_dev->index);
+				datra_reg_write_quick(fifo_dev->config_parent->control_base,
+					DATRA_REG_FIFO_RESET_READ, 1 << fifo_dev->index);
 			return 0;
-		case DYPLO_IOC_USERSIGNAL_QUERY:
+		case DATRA_IOC_USERSIGNAL_QUERY:
 			/* TODO: Return LAST usersignal, not next */
 			return fifo_dev->user_signal;
-		case DYPLO_IOC_USERSIGNAL_TELL:
+		case DATRA_IOC_USERSIGNAL_TELL:
 			if (!(filp->f_mode & FMODE_WRITE))
 				return -EINVAL;
 			arg &= 0xFFFF; /* Only lower bits */
-			if (!dyplo_fifo_write_usersignal(fifo_dev, arg)) {
+			if (!datra_fifo_write_usersignal(fifo_dev, arg)) {
 				printk(KERN_ERR "%s: Failed to set usersignal\n", __func__);
 				return -EIO;
 			}
@@ -1193,47 +1193,47 @@ static long dyplo_fifo_rw_ioctl(struct file *filp, unsigned int cmd, unsigned lo
 }
 
 
-static const struct file_operations dyplo_fifo_read_fops =
+static const struct file_operations datra_fifo_read_fops =
 {
 	.owner = THIS_MODULE,
-	.read = dyplo_fifo_read_read,
+	.read = datra_fifo_read_read,
 	.llseek = no_llseek,
-	.poll = dyplo_fifo_read_poll,
-	.unlocked_ioctl = dyplo_fifo_rw_ioctl,
-	.open = dyplo_fifo_read_open,
-	.release = dyplo_fifo_read_release,
+	.poll = datra_fifo_read_poll,
+	.unlocked_ioctl = datra_fifo_rw_ioctl,
+	.open = datra_fifo_read_open,
+	.release = datra_fifo_read_release,
 };
 
-static int dyplo_fifo_write_level(struct dyplo_fifo_dev *fifo_dev)
+static int datra_fifo_write_level(struct datra_fifo_dev *fifo_dev)
 {
-	return dyplo_reg_read_quick_index(
+	return datra_reg_read_quick_index(
 		fifo_dev->config_parent->control_base,
-		DYPLO_REG_FIFO_WRITE_LEVEL_BASE,
+		DATRA_REG_FIFO_WRITE_LEVEL_BASE,
 		fifo_dev->index);
 }
 
-static void dyplo_fifo_write_enable_interrupt(struct dyplo_fifo_dev *fifo_dev, int thd)
+static void datra_fifo_write_enable_interrupt(struct datra_fifo_dev *fifo_dev, int thd)
 {
 	int index = fifo_dev->index;
 	__iomem int *control_base =
 		fifo_dev->config_parent->control_base;
-	if (thd > (DYPLO_FIFO_WRITE_SIZE*2)/3)
-		thd = (DYPLO_FIFO_WRITE_SIZE*2)/3;
+	if (thd > (DATRA_FIFO_WRITE_SIZE*2)/3)
+		thd = (DATRA_FIFO_WRITE_SIZE*2)/3;
 	else if (thd)
 		--thd; /* IRQ will trigger when level is above thd */
 	pr_debug("%s index=%d thd=%d\n", __func__, index, thd);
-	iowrite32(thd, control_base + (DYPLO_REG_FIFO_WRITE_THD_BASE>>2) + index);
-	iowrite32(BIT(index), control_base + (DYPLO_REG_FIFO_IRQ_SET>>2));
+	iowrite32(thd, control_base + (DATRA_REG_FIFO_WRITE_THD_BASE>>2) + index);
+	iowrite32(BIT(index), control_base + (DATRA_REG_FIFO_IRQ_SET>>2));
 }
 
-static int dyplo_fifo_write_open(struct inode *inode, struct file *filp)
+static int datra_fifo_write_open(struct inode *inode, struct file *filp)
 {
 	int result = 0;
-	struct dyplo_fifo_control_dev *fifo_ctl_dev =
-		container_of(inode->i_cdev, struct dyplo_fifo_control_dev, cdev_fifo_write);
+	struct datra_fifo_control_dev *fifo_ctl_dev =
+		container_of(inode->i_cdev, struct datra_fifo_control_dev, cdev_fifo_write);
 	int index = inode->i_rdev - fifo_ctl_dev->devt_first_fifo_device;
-	struct dyplo_fifo_dev *fifo_dev = &fifo_ctl_dev->fifo_devices[index];
-	struct dyplo_dev* dev = fifo_ctl_dev->config_parent->parent;
+	struct datra_fifo_dev *fifo_dev = &fifo_ctl_dev->fifo_devices[index];
+	struct datra_dev* dev = fifo_ctl_dev->config_parent->parent;
 
 	pr_debug("%s index=%d mode=%#x flags=%#x i-devt=%u d=%u f=%u\n", __func__,
 		index, filp->f_mode, filp->f_flags,
@@ -1248,16 +1248,16 @@ static int dyplo_fifo_write_open(struct inode *inode, struct file *filp)
 		result = -EBUSY;
 		goto error;
 	}
-	fifo_dev->poll_treshold = DYPLO_FIFO_WRITE_SIZE / 2;
+	fifo_dev->poll_treshold = DATRA_FIFO_WRITE_SIZE / 2;
 	filp->private_data = fifo_dev;
-	fifo_dev->user_signal = DYPLO_USERSIGNAL_ZERO;
-	fifo_dev->transfer_buffer = kmalloc(DYPLO_FIFO_WRITE_MAX_BURST_SIZE, GFP_KERNEL);
+	fifo_dev->user_signal = DATRA_USERSIGNAL_ZERO;
+	fifo_dev->transfer_buffer = kmalloc(DATRA_FIFO_WRITE_MAX_BURST_SIZE, GFP_KERNEL);
 	if (unlikely(fifo_dev->transfer_buffer == NULL)) {
 		result = -ENOMEM;
 		goto error;
 	}
 	/* Set user signal register */
-	if (!dyplo_fifo_write_usersignal(fifo_dev, DYPLO_USERSIGNAL_ZERO)) {
+	if (!datra_fifo_write_usersignal(fifo_dev, DATRA_USERSIGNAL_ZERO)) {
 		printk(KERN_ERR "%s: Failed to reset usersignals on w%d\n",
 			__func__, index);
 		result = -EIO;
@@ -1270,10 +1270,10 @@ error:
 	return result;
 }
 
-static int dyplo_fifo_write_release(struct inode *inode, struct file *filp)
+static int datra_fifo_write_release(struct inode *inode, struct file *filp)
 {
-	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
-	struct dyplo_dev* dev = fifo_dev->config_parent->parent;
+	struct datra_fifo_dev *fifo_dev = filp->private_data;
+	struct datra_dev* dev = fifo_dev->config_parent->parent;
 	int status = 0;
 
 	pr_debug("%s index=%d\n", __func__, fifo_dev->index);
@@ -1286,12 +1286,12 @@ static int dyplo_fifo_write_release(struct inode *inode, struct file *filp)
 	return status;
 }
 
-static ssize_t dyplo_fifo_write_write (struct file *filp, const char __user *buf, size_t count,
+static ssize_t datra_fifo_write_write (struct file *filp, const char __user *buf, size_t count,
 	loff_t *f_pos)
 {
 	int status = 0;
-	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
-	int __iomem *mapped_memory = dyplo_fifo_memory_location(fifo_dev);
+	struct datra_fifo_dev *fifo_dev = filp->private_data;
+	int __iomem *mapped_memory = datra_fifo_memory_location(fifo_dev);
 	size_t len = 0;
 
 	pr_debug("%s(%u)\n", __func__, (unsigned int)count);
@@ -1312,7 +1312,7 @@ static ssize_t dyplo_fifo_write_write (struct file *filp, const char __user *buf
 		int words_available;
 		size_t bytes;
 		if (filp->f_flags & O_NONBLOCK) {
-			words_available = dyplo_fifo_write_level(fifo_dev);
+			words_available = datra_fifo_write_level(fifo_dev);
 			if (!words_available) {
 				/* Non-blocking IO, return what we have */
 				if (len)
@@ -1326,11 +1326,11 @@ static ssize_t dyplo_fifo_write_write (struct file *filp, const char __user *buf
 			DEFINE_WAIT(wait);
 			for (;;) {
 				prepare_to_wait(&fifo_dev->fifo_wait_queue, &wait, TASK_INTERRUPTIBLE);
-				words_available = dyplo_fifo_write_level(fifo_dev);
+				words_available = datra_fifo_write_level(fifo_dev);
 				if (words_available)
 					break; /* Done waiting */
 				if (!signal_pending(current)) {
-					dyplo_fifo_write_enable_interrupt(fifo_dev, count >> 2);
+					datra_fifo_write_enable_interrupt(fifo_dev, count >> 2);
 					schedule();
 					continue;
 				}
@@ -1344,8 +1344,8 @@ static ssize_t dyplo_fifo_write_write (struct file *filp, const char __user *buf
 		do {
 			unsigned int words;
 			bytes = words_available << 2;
-			if (bytes > DYPLO_FIFO_WRITE_MAX_BURST_SIZE)
-				bytes = DYPLO_FIFO_WRITE_MAX_BURST_SIZE;
+			if (bytes > DATRA_FIFO_WRITE_MAX_BURST_SIZE)
+				bytes = DATRA_FIFO_WRITE_MAX_BURST_SIZE;
 			if (count < bytes)
 				bytes = count;
 			words = bytes >> 2;
@@ -1373,17 +1373,17 @@ error:
 	return status;
 }
 
-static unsigned int dyplo_fifo_write_poll(struct file *filp, poll_table *wait)
+static unsigned int datra_fifo_write_poll(struct file *filp, poll_table *wait)
 {
-	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
+	struct datra_fifo_dev *fifo_dev = filp->private_data;
 	unsigned int mask;
 
 	poll_wait(filp, &fifo_dev->fifo_wait_queue, wait);
-	if (dyplo_fifo_write_level(fifo_dev))
+	if (datra_fifo_write_level(fifo_dev))
 		mask = (POLLOUT | POLLWRNORM);
 	else {
 		/* Wait for buffer crossing user-defined treshold */
-		dyplo_fifo_write_enable_interrupt(fifo_dev, fifo_dev->poll_treshold);
+		datra_fifo_write_enable_interrupt(fifo_dev, fifo_dev->poll_treshold);
 		mask = 0;
 	}
 
@@ -1392,23 +1392,23 @@ static unsigned int dyplo_fifo_write_poll(struct file *filp, poll_table *wait)
 	return mask;
 }
 
-static const struct file_operations dyplo_fifo_write_fops =
+static const struct file_operations datra_fifo_write_fops =
 {
-	.write = dyplo_fifo_write_write,
-	.poll = dyplo_fifo_write_poll,
+	.write = datra_fifo_write_write,
+	.poll = datra_fifo_write_poll,
 	.llseek = no_llseek,
-	.unlocked_ioctl = dyplo_fifo_rw_ioctl,
-	.open = dyplo_fifo_write_open,
-	.release = dyplo_fifo_write_release,
+	.unlocked_ioctl = datra_fifo_rw_ioctl,
+	.open = datra_fifo_write_open,
+	.release = datra_fifo_write_release,
 };
 
 
 /* Interrupt service routine for CPU fifo node, version 2 */
-static irqreturn_t dyplo_fifo_isr(struct dyplo_dev *dev, struct dyplo_config_dev *cfg_dev)
+static irqreturn_t datra_fifo_isr(struct datra_dev *dev, struct datra_config_dev *cfg_dev)
 {
-	struct dyplo_fifo_control_dev *fifo_ctl_dev = cfg_dev->private_data;
-	u32 status_reg = dyplo_reg_read_quick(
-		cfg_dev->control_base, DYPLO_REG_FIFO_IRQ_STATUS);
+	struct datra_fifo_control_dev *fifo_ctl_dev = cfg_dev->private_data;
+	u32 status_reg = datra_reg_read_quick(
+		cfg_dev->control_base, DATRA_REG_FIFO_IRQ_STATUS);
 	u16 read_status_reg;
 	u16 write_status_reg;
 	u8 index;
@@ -1419,7 +1419,7 @@ static irqreturn_t dyplo_fifo_isr(struct dyplo_dev *dev, struct dyplo_config_dev
 
 	/* Acknowledge interrupt to hardware */
 	iowrite32_quick(status_reg,
-			cfg_dev->control_base + (DYPLO_REG_FIFO_IRQ_CLR>>2));
+			cfg_dev->control_base + (DATRA_REG_FIFO_IRQ_CLR>>2));
 	pr_debug("%s(status=0x%x)\n", __func__, status_reg);
 	/* Trigger the associated wait queues, "read" queues first. These
 	 * are in the upper 16 bits of the interrupt status word */
@@ -1441,32 +1441,32 @@ static irqreturn_t dyplo_fifo_isr(struct dyplo_dev *dev, struct dyplo_config_dev
 }
 
 
-static unsigned int dyplo_dma_get_index(const struct dyplo_dma_dev *dma_dev)
+static unsigned int datra_dma_get_index(const struct datra_dma_dev *dma_dev)
 {
-	return dyplo_get_config_index(dma_dev->config_parent);
+	return datra_get_config_index(dma_dev->config_parent);
 }
 
-static void dyplo_dma_to_logic_irq_enable(u32 __iomem *control_base)
+static void datra_dma_to_logic_irq_enable(u32 __iomem *control_base)
 {
 	pr_debug("%s\n", __func__);
-	iowrite32_quick(BIT(0), control_base + (DYPLO_REG_FIFO_IRQ_SET>>2));
+	iowrite32_quick(BIT(0), control_base + (DATRA_REG_FIFO_IRQ_SET>>2));
 }
 
-static void dyplo_dma_from_logic_irq_enable(u32 __iomem *control_base)
+static void datra_dma_from_logic_irq_enable(u32 __iomem *control_base)
 {
 	pr_debug("%s\n", __func__);
-	iowrite32_quick(BIT(16), control_base + (DYPLO_REG_FIFO_IRQ_SET>>2));
+	iowrite32_quick(BIT(16), control_base + (DATRA_REG_FIFO_IRQ_SET>>2));
 }
 
 /* Kills ongoing DMA transactions and resets everything. */
-static int dyplo_dma_to_logic_reset(struct dyplo_dma_dev *dma_dev)
+static int datra_dma_to_logic_reset(struct datra_dma_dev *dma_dev)
 {
 	u32 __iomem *control_base = dma_dev->config_parent->control_base;
 	u32 reg;
 	int result;
 	DEFINE_WAIT(wait);
 
-	reg = dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_CONTROL);
+	reg = datra_reg_read_quick(control_base, DATRA_DMA_TOLOGIC_CONTROL);
 	pr_debug("%s ctl=%#x\n", __func__, reg);
 	if (reg & BIT(1)) {
 		pr_err("%s: Reset already in progress\n", __func__);
@@ -1479,11 +1479,11 @@ static int dyplo_dma_to_logic_reset(struct dyplo_dma_dev *dma_dev)
 	reg |= BIT(1);
 	prepare_to_wait(&dma_dev->wait_queue_to_logic, &wait, TASK_INTERRUPTIBLE);
 	/* Enable reset-ready-interrupt */
-	iowrite32(BIT(15), control_base + (DYPLO_REG_FIFO_IRQ_SET>>2));
+	iowrite32(BIT(15), control_base + (DATRA_REG_FIFO_IRQ_SET>>2));
 	/* Send reset command */
-	iowrite32_quick(reg, control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2));
+	iowrite32_quick(reg, control_base + (DATRA_DMA_TOLOGIC_CONTROL>>2));
 	for(;;) {
-		if ((dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_CONTROL) & BIT(1)) == 0) {
+		if ((datra_reg_read_quick(control_base, DATRA_DMA_TOLOGIC_CONTROL) & BIT(1)) == 0) {
 			result = 0;
 			break;
 		}
@@ -1501,14 +1501,14 @@ static int dyplo_dma_to_logic_reset(struct dyplo_dma_dev *dma_dev)
 	finish_wait(&dma_dev->wait_queue_from_logic, &wait);
 
 	/* Re-enable the node */
-	iowrite32_quick(BIT(0), control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2));
+	iowrite32_quick(BIT(0), control_base + (DATRA_DMA_TOLOGIC_CONTROL>>2));
 	dma_dev->dma_to_logic_head = 0;
 	dma_dev->dma_to_logic_tail = 0;
 	kfifo_reset(&dma_dev->dma_to_logic_wip);
 	return 0;
 }
 
-static int dyplo_dma_from_logic_reset(struct dyplo_dma_dev *dma_dev)
+static int datra_dma_from_logic_reset(struct datra_dma_dev *dma_dev)
 {
 	u32 __iomem *control_base = dma_dev->config_parent->control_base;
 	u32 reg;
@@ -1516,7 +1516,7 @@ static int dyplo_dma_from_logic_reset(struct dyplo_dma_dev *dma_dev)
 	DEFINE_WAIT(wait);
 
 
-	reg = dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_CONTROL);
+	reg = datra_reg_read_quick(control_base, DATRA_DMA_FROMLOGIC_CONTROL);
 	pr_debug("%s ctl=%#x\n", __func__, reg);
 	if (reg & BIT(1)) {
 		pr_err("%s: Reset already in progress\n", __func__);
@@ -1529,11 +1529,11 @@ static int dyplo_dma_from_logic_reset(struct dyplo_dma_dev *dma_dev)
 	reg |= BIT(1);
 	prepare_to_wait(&dma_dev->wait_queue_from_logic, &wait, TASK_INTERRUPTIBLE);
 	/* Enable reset-ready-interrupt */
-	iowrite32(BIT(31), control_base + (DYPLO_REG_FIFO_IRQ_SET>>2));
+	iowrite32(BIT(31), control_base + (DATRA_REG_FIFO_IRQ_SET>>2));
 	/* Send reset command */
-	iowrite32_quick(BIT(1)|BIT(0), control_base + (DYPLO_DMA_FROMLOGIC_CONTROL>>2));
+	iowrite32_quick(BIT(1)|BIT(0), control_base + (DATRA_DMA_FROMLOGIC_CONTROL>>2));
 	for(;;) {
-		if ((dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_CONTROL) & BIT(1)) == 0) {
+		if ((datra_reg_read_quick(control_base, DATRA_DMA_FROMLOGIC_CONTROL) & BIT(1)) == 0) {
 			result = 0;
 			break;
 		}
@@ -1544,8 +1544,8 @@ static int dyplo_dma_from_logic_reset(struct dyplo_dma_dev *dma_dev)
 		if (schedule_timeout(HZ) == 0) {
 			pr_err("%s: TIMEOUT waiting for reset complete IRQ ctrl=%#x ists=%#x\n",
 				__func__,
-				dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_CONTROL),
-				dyplo_reg_read_quick(control_base, DYPLO_REG_FIFO_IRQ_STATUS));
+				datra_reg_read_quick(control_base, DATRA_DMA_FROMLOGIC_CONTROL),
+				datra_reg_read_quick(control_base, DATRA_REG_FIFO_IRQ_STATUS));
 			result = -ETIMEDOUT;
 			break;
 		}
@@ -1554,7 +1554,7 @@ static int dyplo_dma_from_logic_reset(struct dyplo_dma_dev *dma_dev)
 	finish_wait(&dma_dev->wait_queue_from_logic, &wait);
 
 	/* Re-enable the node */
-	iowrite32_quick(BIT(0), control_base + (DYPLO_DMA_FROMLOGIC_CONTROL>>2));
+	iowrite32_quick(BIT(0), control_base + (DATRA_DMA_FROMLOGIC_CONTROL>>2));
 
 	dma_dev->dma_from_logic_head = 0;
 	dma_dev->dma_from_logic_tail = 0;
@@ -1564,17 +1564,17 @@ static int dyplo_dma_from_logic_reset(struct dyplo_dma_dev *dma_dev)
 }
 
 /* Forward declarations */
-static const struct file_operations dyplo_dma_to_logic_fops;
-static const struct file_operations dyplo_dma_from_logic_fops;
-static int dyplo_dma_to_logic_block_free(struct dyplo_dma_dev *dma_dev);
-static int dyplo_dma_from_logic_block_free(struct dyplo_dma_dev *dma_dev);
+static const struct file_operations datra_dma_to_logic_fops;
+static const struct file_operations datra_dma_from_logic_fops;
+static int datra_dma_to_logic_block_free(struct datra_dma_dev *dma_dev);
+static int datra_dma_from_logic_block_free(struct datra_dma_dev *dma_dev);
 
-static int dyplo_dma_open(struct inode *inode, struct file *filp)
+static int datra_dma_open(struct inode *inode, struct file *filp)
 {
-	struct dyplo_dma_dev *dma_dev = container_of(
-		inode->i_cdev, struct dyplo_dma_dev, cdev_dma);
-	struct dyplo_config_dev *cfg_dev = dma_dev->config_parent;
-	struct dyplo_dev *dev = cfg_dev->parent;
+	struct datra_dma_dev *dma_dev = container_of(
+		inode->i_cdev, struct datra_dma_dev, cdev_dma);
+	struct datra_config_dev *cfg_dev = dma_dev->config_parent;
+	struct datra_dev *dev = cfg_dev->parent;
 	int status = 0;
 
 	pr_debug("%s(mode=%#x flags=%#x)\n", __func__,
@@ -1597,19 +1597,19 @@ static int dyplo_dma_open(struct inode *inode, struct file *filp)
 			goto exit_open;
 		}
 		dma_dev->open_mode |= FMODE_WRITE; /* Set in-use bits */
-		filp->f_op = &dyplo_dma_to_logic_fops;
+		filp->f_op = &datra_dma_to_logic_fops;
 		/* Reset usersignal */
-		iowrite32_quick(DYPLO_USERSIGNAL_ZERO,
-			cfg_dev->control_base + (DYPLO_DMA_TOLOGIC_USERBITS>>2));
+		iowrite32_quick(DATRA_USERSIGNAL_ZERO,
+			cfg_dev->control_base + (DATRA_DMA_TOLOGIC_USERBITS>>2));
 		/* Default to generic size */
-		dma_dev->dma_to_logic_block_size = dyplo_dma_default_block_size;
+		dma_dev->dma_to_logic_block_size = datra_dma_default_block_size;
 	} else {
 		if (dma_dev->open_mode & FMODE_READ) {
 			status = -EBUSY;
 			goto exit_open;
 		}
 		dma_dev->open_mode |= FMODE_READ; /* Set in-use bits */
-		filp->f_op = &dyplo_dma_from_logic_fops;
+		filp->f_op = &datra_dma_from_logic_fops;
 	}
 exit_open:
 	up(&dev->fop_sem);
@@ -1618,9 +1618,9 @@ exit_open:
 	return status;
 }
 
-static int dyplo_dma_common_release(struct dyplo_dma_dev *dma_dev, mode_t flag_to_clear)
+static int datra_dma_common_release(struct datra_dma_dev *dma_dev, mode_t flag_to_clear)
 {
-	struct dyplo_dev *dev = dma_dev->config_parent->parent;
+	struct datra_dev *dev = dma_dev->config_parent->parent;
 
 	if (down_interruptible(&dev->fop_sem))
 		return -ERESTARTSYS;
@@ -1630,26 +1630,26 @@ static int dyplo_dma_common_release(struct dyplo_dma_dev *dma_dev, mode_t flag_t
 	return 0;
 }
 
-static int dyplo_dma_to_logic_release(struct inode *inode, struct file *filp)
+static int datra_dma_to_logic_release(struct inode *inode, struct file *filp)
 {
-	struct dyplo_dma_dev *dma_dev = filp->private_data;
+	struct datra_dma_dev *dma_dev = filp->private_data;
 
 	/* If we were in "block" mode, release those resources now. */
 	if (dma_dev->dma_to_logic_blocks.blocks)
-		dyplo_dma_to_logic_block_free(dma_dev);
+		datra_dma_to_logic_block_free(dma_dev);
 
-	return dyplo_dma_common_release(dma_dev, FMODE_WRITE);
+	return datra_dma_common_release(dma_dev, FMODE_WRITE);
 }
 
-static int dyplo_dma_from_logic_release(struct inode *inode, struct file *filp)
+static int datra_dma_from_logic_release(struct inode *inode, struct file *filp)
 {
-	struct dyplo_dma_dev *dma_dev = filp->private_data;
+	struct datra_dma_dev *dma_dev = filp->private_data;
 
 	/* If we were in "block" mode, release those resources now. */
 	if (dma_dev->dma_from_logic_blocks.blocks)
-		dyplo_dma_from_logic_block_free(dma_dev);
+		datra_dma_from_logic_block_free(dma_dev);
 
-	return dyplo_dma_common_release(dma_dev, FMODE_READ);
+	return datra_dma_common_release(dma_dev, FMODE_READ);
 }
 
 /* CPU and DMA shouldn't be accessing the same cache line simultaneously.
@@ -1660,29 +1660,29 @@ static unsigned int round_up_to_cacheline(unsigned int value)
 	return (value + (PAGE_SIZE-1)) & (~(PAGE_SIZE-1));
 }
 
-static unsigned int dyplo_dma_to_logic_avail(struct dyplo_dma_dev *dma_dev)
+static unsigned int datra_dma_to_logic_avail(struct datra_dma_dev *dma_dev)
 {
 	u32 __iomem *control_base = dma_dev->config_parent->control_base;
-	u32 status = dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_STATUS);
+	u32 status = datra_reg_read_quick(control_base, DATRA_DMA_TOLOGIC_STATUS);
 	/* Status: bits 24..31: #results; 16..23: available to execute */
 	u8 num_results;
 
 	pr_debug("%s status=%#x\n", __func__, status);
 	for (num_results = (status >> 24); num_results != 0; --num_results) {
 		/* Fetch result from queue */
-		struct dyplo_dma_to_logic_operation op;
-		dma_addr_t addr = dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_RESULT_ADDR_LOW);
+		struct datra_dma_to_logic_operation op;
+		dma_addr_t addr = datra_reg_read_quick(control_base, DATRA_DMA_TOLOGIC_RESULT_ADDR_LOW);
 		if (dma_dev->dma_64bit)
-			addr |= ((dma_addr_t)dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_RESULT_ADDR_HIGH) << 32);
+			addr |= ((dma_addr_t)datra_reg_read_quick(control_base, DATRA_DMA_TOLOGIC_RESULT_ADDR_HIGH) << 32);
 		if (unlikely(!kfifo_get(&dma_dev->dma_to_logic_wip, &op))) {
 			pr_err("Nothing in fifo of DMA node %u but still %u results\n",
-				dyplo_dma_get_index(dma_dev), num_results);
+				datra_dma_get_index(dma_dev), num_results);
 			BUG();
 		}
 		pr_debug("%s addr=0x%llx wip=0x%llx,%u\n", __func__, (u64)addr, (u64)op.addr, op.size);
 		if (unlikely(op.addr != addr)) {
 			pr_err("Mismatch in result of DMA node %u: phys=%pa expected 0x%llx (size %d) actual 0x%llx\n",
-				dyplo_dma_get_index(dma_dev),
+				datra_dma_get_index(dma_dev),
 				&dma_dev->dma_to_logic_handle,
 				(u64)op.addr, op.size, (u64)addr);
 			pr_err("head=%#x (%d) tail=%#x (%d)\n",
@@ -1696,9 +1696,9 @@ static unsigned int dyplo_dma_to_logic_avail(struct dyplo_dma_dev *dma_dev)
 				pr_err("Internal entry: 0x%llx (size %d)\n", (u64)op.addr, op.size);
 			}
 			while (num_results) {
-				dma_addr_t addr = dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_RESULT_ADDR_LOW);
+				dma_addr_t addr = datra_reg_read_quick(control_base, DATRA_DMA_TOLOGIC_RESULT_ADDR_LOW);
 				if (dma_dev->dma_64bit)
-					addr |= ((dma_addr_t)dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_RESULT_ADDR_HIGH) << 32);
+					addr |= ((dma_addr_t)datra_reg_read_quick(control_base, DATRA_DMA_TOLOGIC_RESULT_ADDR_HIGH) << 32);
 				pr_err("Logic result: 0x%llx\n", (u64)addr);
 				--num_results;
 			}
@@ -1710,7 +1710,7 @@ static unsigned int dyplo_dma_to_logic_avail(struct dyplo_dma_dev *dma_dev)
 		pr_debug("%s tail=%u\n", __func__, dma_dev->dma_to_logic_tail);
 		if (unlikely(dma_dev->dma_to_logic_tail > dma_dev->dma_to_logic_memory_size)) {
 			pr_err("Overflow in DMA node %u: tail %u size %u\n",
-				dyplo_dma_get_index(dma_dev),
+				datra_dma_get_index(dma_dev),
 				dma_dev->dma_to_logic_tail, dma_dev->dma_to_logic_memory_size);
 			BUG();
 		}
@@ -1730,16 +1730,16 @@ static unsigned int dyplo_dma_to_logic_avail(struct dyplo_dma_dev *dma_dev)
 
 /* Two things may block: There's no room in the ring, or there's no room
  * in the command buffer. */
-static ssize_t dyplo_dma_write(struct file *filp, const char __user *buf,
+static ssize_t datra_dma_write(struct file *filp, const char __user *buf,
 	size_t count, loff_t *f_pos)
 {
 	int status = 0;
-	struct dyplo_dma_dev *dma_dev = filp->private_data;
+	struct datra_dma_dev *dma_dev = filp->private_data;
 	u32 __iomem *control_base = dma_dev->config_parent->control_base;
 	unsigned int bytes_to_copy;
 	unsigned int bytes_copied = 0;
 	unsigned int bytes_avail;
-	struct dyplo_dma_to_logic_operation dma_op;
+	struct datra_dma_to_logic_operation dma_op;
 	DEFINE_WAIT(wait);
 	const bool is_blocking = (filp->f_flags & O_NONBLOCK) == 0;
 
@@ -1757,7 +1757,7 @@ static ssize_t dyplo_dma_write(struct file *filp, const char __user *buf,
 		for(;;) {
 			if (is_blocking)
 				prepare_to_wait(&dma_dev->wait_queue_to_logic, &wait, TASK_INTERRUPTIBLE);
-			bytes_avail = dyplo_dma_to_logic_avail(dma_dev);
+			bytes_avail = datra_dma_to_logic_avail(dma_dev);
 			pr_debug("%s bytes_avail=%u head=%u tail=%u\n", __func__,
 				bytes_avail, dma_dev->dma_to_logic_head, dma_dev->dma_to_logic_tail);
 			if (bytes_avail != 0)
@@ -1765,7 +1765,7 @@ static ssize_t dyplo_dma_write(struct file *filp, const char __user *buf,
 			if (signal_pending(current))
 				goto error_interrupted;
 			/* Enable interrupt */
-			dyplo_dma_to_logic_irq_enable(control_base);
+			datra_dma_to_logic_irq_enable(control_base);
 			if (is_blocking)
 				schedule();
 			else {
@@ -1797,12 +1797,12 @@ static ssize_t dyplo_dma_write(struct file *filp, const char __user *buf,
 		for(;;) {
 			if (is_blocking)
 				prepare_to_wait(&dma_dev->wait_queue_to_logic, &wait, TASK_INTERRUPTIBLE);
-			if (dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_STATUS) & 0xFF0000)
+			if (datra_reg_read_quick(control_base, DATRA_DMA_TOLOGIC_STATUS) & 0xFF0000)
 				break; /* There is room in the command buffer */
 			if (signal_pending(current))
 				goto error_interrupted;
 			/* Enable interrupt */
-			dyplo_dma_to_logic_irq_enable(control_base);
+			datra_dma_to_logic_irq_enable(control_base);
 			if (is_blocking)
 				schedule();
 			else {
@@ -1819,10 +1819,10 @@ static ssize_t dyplo_dma_write(struct file *filp, const char __user *buf,
 			finish_wait(&dma_dev->wait_queue_to_logic, &wait);
 		pr_debug("%s sending addr=%#x size=%u\n", __func__,
 			(unsigned int)dma_op.addr, dma_op.size);
-		iowrite32_quick(dma_op.addr & 0xFFFFFFFF, control_base + (DYPLO_DMA_TOLOGIC_STARTADDR_LOW>>2));
+		iowrite32_quick(dma_op.addr & 0xFFFFFFFF, control_base + (DATRA_DMA_TOLOGIC_STARTADDR_LOW>>2));
 		if (dma_dev->dma_64bit)
-			iowrite32_quick(dma_op.addr >> 32, control_base + (DYPLO_DMA_TOLOGIC_STARTADDR_HIGH>>2));
-		iowrite32(dma_op.size, control_base + (DYPLO_DMA_TOLOGIC_BYTESIZE>>2));
+			iowrite32_quick(dma_op.addr >> 32, control_base + (DATRA_DMA_TOLOGIC_STARTADDR_HIGH>>2));
+		iowrite32(dma_op.size, control_base + (DATRA_DMA_TOLOGIC_BYTESIZE>>2));
 		if (unlikely(kfifo_put(&dma_dev->dma_to_logic_wip, dma_op) == 0)) {
 			pr_err("dma_to_logic_wip kfifo was full, cannot put %#x %u\n",
 				(u32)dma_op.addr, dma_op.size);
@@ -1854,13 +1854,13 @@ error_interrupted:
 }
 
 /* Adds new read commands to the queue and returns number of results */
-static unsigned int dyplo_dma_from_logic_pump(struct dyplo_dma_dev *dma_dev)
+static unsigned int datra_dma_from_logic_pump(struct datra_dma_dev *dma_dev)
 {
 	u32 __iomem *control_base = dma_dev->config_parent->control_base;
 	u32 status_reg;
 	u8 num_free_entries;
 
-	status_reg = dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_STATUS);
+	status_reg = datra_reg_read_quick(control_base, DATRA_DMA_FROMLOGIC_STATUS);
 	pr_debug("%s status=%#x\n", __func__, status_reg);
 	num_free_entries = (status_reg >> 16) & 0xFF;
 
@@ -1869,10 +1869,10 @@ static unsigned int dyplo_dma_from_logic_pump(struct dyplo_dma_dev *dma_dev)
 			break; /* No more room for commands */
 		pr_debug("%s sending addr=0x%llx size=%u\n", __func__,
 			(u64)dma_dev->dma_from_logic_handle + dma_dev->dma_from_logic_head, dma_dev->dma_from_logic_block_size);
-		iowrite32((dma_dev->dma_from_logic_handle + dma_dev->dma_from_logic_head) & 0xFFFFFFFF, control_base + (DYPLO_DMA_FROMLOGIC_STARTADDR_LOW>>2));
+		iowrite32((dma_dev->dma_from_logic_handle + dma_dev->dma_from_logic_head) & 0xFFFFFFFF, control_base + (DATRA_DMA_FROMLOGIC_STARTADDR_LOW>>2));
 		if (dma_dev->dma_64bit)
-			iowrite32((dma_dev->dma_from_logic_handle + dma_dev->dma_from_logic_head) >> 32, control_base + (DYPLO_DMA_FROMLOGIC_STARTADDR_HIGH>>2));
-		iowrite32(dma_dev->dma_from_logic_block_size, control_base + (DYPLO_DMA_FROMLOGIC_BYTESIZE>>2));
+			iowrite32((dma_dev->dma_from_logic_handle + dma_dev->dma_from_logic_head) >> 32, control_base + (DATRA_DMA_FROMLOGIC_STARTADDR_HIGH>>2));
+		iowrite32(dma_dev->dma_from_logic_block_size, control_base + (DATRA_DMA_FROMLOGIC_BYTESIZE>>2));
 		dma_dev->dma_from_logic_head += dma_dev->dma_from_logic_block_size;
 		if (dma_dev->dma_from_logic_head == dma_dev->dma_from_logic_memory_size)
 			dma_dev->dma_from_logic_head = 0;
@@ -1884,17 +1884,17 @@ static unsigned int dyplo_dma_from_logic_pump(struct dyplo_dma_dev *dma_dev)
 	return status_reg >> 24;
 }
 
-static ssize_t dyplo_dma_read(struct file *filp, char __user *buf, size_t count,
+static ssize_t datra_dma_read(struct file *filp, char __user *buf, size_t count,
                 loff_t *f_pos)
 {
-	struct dyplo_dma_dev *dma_dev = filp->private_data;
+	struct datra_dma_dev *dma_dev = filp->private_data;
 	u32 __iomem *control_base = dma_dev->config_parent->control_base;
 	int status = 0;
 	unsigned int bytes_to_copy;
 	unsigned int bytes_copied = 0;
 	unsigned int results_avail = 0;
 	unsigned int tail;
-	struct dyplo_dma_from_logic_operation *current_op =
+	struct datra_dma_from_logic_operation *current_op =
 		&dma_dev->dma_from_logic_current_op;
 	DEFINE_WAIT(wait);
 	const bool is_blocking = (filp->f_flags & O_NONBLOCK) == 0;
@@ -1912,13 +1912,13 @@ static ssize_t dyplo_dma_read(struct file *filp, char __user *buf, size_t count,
 		while (current_op->size == 0) {
 			/* Fetch a new operation from logic */
 			if (results_avail) {
-				dma_addr_t start_addr = dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_RESULT_ADDR_LOW);
+				dma_addr_t start_addr = datra_reg_read_quick(control_base, DATRA_DMA_FROMLOGIC_RESULT_ADDR_LOW);
 				if (dma_dev->dma_64bit)
-					start_addr |= ((dma_addr_t)dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_RESULT_ADDR_HIGH) << 32);
+					start_addr |= ((dma_addr_t)datra_reg_read_quick(control_base, DATRA_DMA_FROMLOGIC_RESULT_ADDR_HIGH) << 32);
 				tail = start_addr - dma_dev->dma_from_logic_handle;
 				current_op->addr = ((char*)dma_dev->dma_from_logic_memory) + tail;
-				current_op->user_signal = dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_RESULT_USERBITS);
-				current_op->size = dyplo_reg_read(control_base, DYPLO_DMA_FROMLOGIC_RESULT_BYTESIZE);
+				current_op->user_signal = datra_reg_read_quick(control_base, DATRA_DMA_FROMLOGIC_RESULT_USERBITS);
+				current_op->size = datra_reg_read(control_base, DATRA_DMA_FROMLOGIC_RESULT_BYTESIZE);
 				current_op->short_transfer = (current_op->size != dma_dev->dma_from_logic_block_size);
 				tail += dma_dev->dma_from_logic_block_size;
 				if (tail == dma_dev->dma_from_logic_memory_size)
@@ -1931,7 +1931,7 @@ static ssize_t dyplo_dma_read(struct file *filp, char __user *buf, size_t count,
 				for(;;) {
 					if (is_blocking)
 						prepare_to_wait(&dma_dev->wait_queue_from_logic, &wait, TASK_INTERRUPTIBLE);
-					results_avail = dyplo_dma_from_logic_pump(dma_dev);
+					results_avail = datra_dma_from_logic_pump(dma_dev);
 					pr_debug("%s results_avail=%u head=%u tail=%u\n", __func__,
 						results_avail, dma_dev->dma_from_logic_head, dma_dev->dma_from_logic_tail);
 					if (results_avail != 0)
@@ -1939,7 +1939,7 @@ static ssize_t dyplo_dma_read(struct file *filp, char __user *buf, size_t count,
 					if (signal_pending(current))
 						goto error_interrupted;
 					/* Enable interrupt */
-					dyplo_dma_from_logic_irq_enable(control_base);
+					datra_dma_from_logic_irq_enable(control_base);
 					if (is_blocking)
 						schedule();
 					else {
@@ -1980,7 +1980,7 @@ static ssize_t dyplo_dma_read(struct file *filp, char __user *buf, size_t count,
 				pr_debug("%s: move tail %u\n", __func__,
 					dma_dev->dma_from_logic_tail);
 				/* We moved the tail up, so submit more work to logic */
-				results_avail = dyplo_dma_from_logic_pump(dma_dev);
+				results_avail = datra_dma_from_logic_pump(dma_dev);
 				if (current_op->short_transfer)
 					break; /* Usersignal change, return immediately */
 			}
@@ -1997,9 +1997,9 @@ error_interrupted:
 	return -ERESTARTSYS;
 }
 
-static unsigned int dyplo_dma_to_logic_poll(struct file *filp, poll_table *wait)
+static unsigned int datra_dma_to_logic_poll(struct file *filp, poll_table *wait)
 {
-	struct dyplo_dma_dev *dma_dev = filp->private_data;
+	struct datra_dma_dev *dma_dev = filp->private_data;
 	u32 __iomem *control_base = dma_dev->config_parent->control_base;
 	unsigned int mask = 0;
 	unsigned int avail;
@@ -2009,25 +2009,25 @@ static unsigned int dyplo_dma_to_logic_poll(struct file *filp, poll_table *wait)
 	if (dma_dev->dma_to_logic_blocks.blocks) {
 		/* Writable when not all blocks have been submitted, or when
 		 * results are available and can be dequeued */
-		avail = dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_STATUS);
+		avail = datra_reg_read_quick(control_base, DATRA_DMA_TOLOGIC_STATUS);
 		if ((avail & 0xFF000000) == 0) {
 			/* No results yet, see if there are blocks available */
 			avail = ((avail >> 16) & 0xFF) + dma_dev->dma_to_logic_blocks.count - DMA_MAX_NUMBER_OF_COMMANDS;
 		}
 	} else
-		avail = dyplo_dma_to_logic_avail(dma_dev);
+		avail = datra_dma_to_logic_avail(dma_dev);
 	if (avail)
 		mask |= (POLLOUT | POLLWRNORM);
 	else
-		dyplo_dma_to_logic_irq_enable(control_base);
+		datra_dma_to_logic_irq_enable(control_base);
 
 	pr_debug("%s(%#x) -> %#x\n", __func__, avail, mask);
 	return mask;
 }
 
-static unsigned int dyplo_dma_from_logic_poll(struct file *filp, poll_table *wait)
+static unsigned int datra_dma_from_logic_poll(struct file *filp, poll_table *wait)
 {
-	struct dyplo_dma_dev *dma_dev = filp->private_data;
+	struct datra_dma_dev *dma_dev = filp->private_data;
 	u32 __iomem *control_base = dma_dev->config_parent->control_base;
 	unsigned int mask = 0;
 	unsigned int avail;
@@ -2035,61 +2035,61 @@ static unsigned int dyplo_dma_from_logic_poll(struct file *filp, poll_table *wai
 	poll_wait(filp, &dma_dev->wait_queue_from_logic, wait);
 
 	if (dma_dev->dma_from_logic_blocks.blocks) {
-		avail = dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_STATUS);
+		avail = datra_reg_read_quick(control_base, DATRA_DMA_FROMLOGIC_STATUS);
 		pr_debug("%s(status=%#x)\n", __func__, avail);
 		avail &= 0xFF000000;
 	} else {
 		if (dma_dev->dma_from_logic_current_op.size)
 			avail = 1;
 		else
-			avail = dyplo_dma_from_logic_pump(dma_dev);
+			avail = datra_dma_from_logic_pump(dma_dev);
 	}
 	if (avail)
 		mask |= (POLLIN | POLLRDNORM);
 	else
-		dyplo_dma_from_logic_irq_enable(control_base);
+		datra_dma_from_logic_irq_enable(control_base);
 
 	pr_debug("%s(%x) -> %#x\n", __func__, avail, mask);
 	return mask;
 }
 
-static int dyplo_dma_add_route(struct dyplo_dma_dev *dma_dev, int source, int dest)
+static int datra_dma_add_route(struct datra_dma_dev *dma_dev, int source, int dest)
 {
-	struct dyplo_route_item_t route;
+	struct datra_route_item_t route;
 	route.srcFifo = (source >> 8) & 0xFF;
 	route.srcNode = source & 0xFF;
 	route.dstFifo = (dest >> 8) & 0xFF;
 	route.dstNode = dest & 0xFF;
-	dyplo_ctl_route_add(dma_dev->config_parent->parent, route);
+	datra_ctl_route_add(dma_dev->config_parent->parent, route);
 	return 0;
 }
 
-static int dyplo_dma_get_route_id(struct dyplo_dma_dev *dma_dev)
+static int datra_dma_get_route_id(struct datra_dma_dev *dma_dev)
 {
 	/* Only one fifo, so upper 8 bits are always 0 */
-	return dyplo_dma_get_index(dma_dev);
+	return datra_dma_get_index(dma_dev);
 }
 
-static void dyplo_dma_common_block_free_coherent(struct dyplo_dev *dev,
-	struct dyplo_dma_block_set* dma_block_set,
+static void datra_dma_common_block_free_coherent(struct datra_dev *dev,
+	struct datra_dma_block_set* dma_block_set,
 	enum dma_data_direction direction)
 {
 	u32 i;
 
 	for (i = 0; i < dma_block_set->count; ++i) {
-		struct dyplo_dma_block *block = &dma_block_set->blocks[i];
+		struct datra_dma_block *block = &dma_block_set->blocks[i];
 		if (block->mem_addr)
 			dma_free_coherent(dev->device, block->data.size,
 				block->mem_addr, block->phys_addr);
 	}
 }
 
-static int dyplo_dma_common_block_free(struct dyplo_dma_dev *dma_dev,
-	struct dyplo_dma_block_set* dma_block_set,
+static int datra_dma_common_block_free(struct datra_dma_dev *dma_dev,
+	struct datra_dma_block_set* dma_block_set,
 	enum dma_data_direction direction)
 {
-	if (!(dma_block_set->flags & DYPLO_DMA_BLOCK_FLAG_SHAREDMEM)) {
-		dyplo_dma_common_block_free_coherent(dma_dev->config_parent->parent, dma_block_set, direction);
+	if (!(dma_block_set->flags & DATRA_DMA_BLOCK_FLAG_SHAREDMEM)) {
+		datra_dma_common_block_free_coherent(dma_dev->config_parent->parent, dma_block_set, direction);
 	}
 	kfree(dma_block_set->blocks);
 	dma_block_set->blocks = NULL;
@@ -2099,19 +2099,19 @@ static int dyplo_dma_common_block_free(struct dyplo_dma_dev *dma_dev,
 	return 0;
 }
 
-static int dyplo_dma_to_logic_block_free(struct dyplo_dma_dev *dma_dev)
+static int datra_dma_to_logic_block_free(struct datra_dma_dev *dma_dev)
 {
 	/* Reset the device to release all resources */
-	dyplo_dma_to_logic_reset(dma_dev);
-	return dyplo_dma_common_block_free(dma_dev, &dma_dev->dma_to_logic_blocks, DMA_TO_DEVICE);
+	datra_dma_to_logic_reset(dma_dev);
+	return datra_dma_common_block_free(dma_dev, &dma_dev->dma_to_logic_blocks, DMA_TO_DEVICE);
 }
 
-static int dyplo_dma_common_block_alloc_one_coherent(
-	struct dyplo_dma_dev *dma_dev,
-	struct dyplo_dma_block *block,
+static int datra_dma_common_block_alloc_one_coherent(
+	struct datra_dma_dev *dma_dev,
+	struct datra_dma_block *block,
 	enum dma_data_direction direction)
 {
-	struct dyplo_dev *dev = dma_dev->config_parent->parent;
+	struct datra_dev *dev = dma_dev->config_parent->parent;
 
 	block->mem_addr = dma_alloc_coherent(dev->device,
 		block->data.size, &block->phys_addr, GFP_KERNEL);
@@ -2121,12 +2121,12 @@ static int dyplo_dma_common_block_alloc_one_coherent(
 	return 0;
 }
 
-static int dyplo_dma_common_block_alloc(struct dyplo_dma_dev *dma_dev,
-	struct dyplo_dma_configuration_req *request,
-	struct dyplo_dma_block_set* dma_block_set,
+static int datra_dma_common_block_alloc(struct datra_dma_dev *dma_dev,
+	struct datra_dma_configuration_req *request,
+	struct datra_dma_block_set* dma_block_set,
 	enum dma_data_direction direction)
 {
-	struct dyplo_dma_block *block;
+	struct datra_dma_block *block;
 	u32 i;
 	int ret;
 
@@ -2145,12 +2145,12 @@ static int dyplo_dma_common_block_alloc(struct dyplo_dma_dev *dma_dev,
 	dma_block_set->blocks = block;
 	dma_block_set->size = request->size;
 	dma_block_set->count = request->count;
-	dma_block_set->flags = DYPLO_DMA_BLOCK_FLAG_COHERENT;
+	dma_block_set->flags = DATRA_DMA_BLOCK_FLAG_COHERENT;
 	/* The pre-allocated buffers are coherent, so if the blocks fit
 		* in there, we can just re-use the already allocated one */
 	if (direction == DMA_FROM_DEVICE) {
 		if (request->count * request->size <= dma_dev->dma_from_logic_memory_size) {
-			dma_block_set->flags |= DYPLO_DMA_BLOCK_FLAG_SHAREDMEM;
+			dma_block_set->flags |= DATRA_DMA_BLOCK_FLAG_SHAREDMEM;
 			for (i = 0; i < request->count; ++i, ++block) {
 				block->data.id = i;
 				block->data.size = request->size;
@@ -2162,7 +2162,7 @@ static int dyplo_dma_common_block_alloc(struct dyplo_dma_dev *dma_dev,
 		}
 	} else {
 		if (request->count * request->size <= dma_dev->dma_to_logic_memory_size) {
-			dma_block_set->flags |= DYPLO_DMA_BLOCK_FLAG_SHAREDMEM;
+			dma_block_set->flags |= DATRA_DMA_BLOCK_FLAG_SHAREDMEM;
 			for (i = 0; i < request->count; ++i, ++block) {
 				block->data.id = i;
 				block->data.size = request->size;
@@ -2177,9 +2177,9 @@ static int dyplo_dma_common_block_alloc(struct dyplo_dma_dev *dma_dev,
 		block->data.id = i;
 		block->data.size = request->size;
 		block->data.offset = i * request->size;
-		ret = dyplo_dma_common_block_alloc_one_coherent(dma_dev, block, direction);
+		ret = datra_dma_common_block_alloc_one_coherent(dma_dev, block, direction);
 		if (unlikely(ret)) {
-			dyplo_dma_common_block_free(dma_dev, dma_block_set, direction);
+			datra_dma_common_block_free(dma_dev, dma_block_set, direction);
 			return ret;
 		}
 	}
@@ -2187,21 +2187,21 @@ static int dyplo_dma_common_block_alloc(struct dyplo_dma_dev *dma_dev,
 }
 
 /* For backward compatibility */
-static int dyplo_dma_to_logic_block_alloc(struct dyplo_dma_dev *dma_dev,
-	struct dyplo_buffer_block_alloc_req __user *arg)
+static int datra_dma_to_logic_block_alloc(struct datra_dma_dev *dma_dev,
+	struct datra_buffer_block_alloc_req __user *arg)
 {
-	struct dyplo_buffer_block_alloc_req request;
-	struct dyplo_dma_configuration_req r;
+	struct datra_buffer_block_alloc_req request;
+	struct datra_dma_configuration_req r;
 	int ret;
 
 	if (copy_from_user(&request, arg, sizeof(request)))
 		return -EFAULT;
-	r.mode = DYPLO_DMA_MODE_BLOCK_COHERENT;
+	r.mode = DATRA_DMA_MODE_BLOCK_COHERENT;
 	r.size = request.size;
 	r.count = request.count;
 
-	dyplo_dma_to_logic_block_free(dma_dev);
-	ret = dyplo_dma_common_block_alloc(dma_dev, &r, &dma_dev->dma_to_logic_blocks, DMA_TO_DEVICE);
+	datra_dma_to_logic_block_free(dma_dev);
+	ret = datra_dma_common_block_alloc(dma_dev, &r, &dma_dev->dma_to_logic_blocks, DMA_TO_DEVICE);
 	if (ret)
 		return ret;
 
@@ -2213,8 +2213,8 @@ static int dyplo_dma_to_logic_block_alloc(struct dyplo_dma_dev *dma_dev,
 	return 0;
 }
 
-static int dyplo_dma_to_logic_block_query(struct dyplo_dma_dev *dma_dev,
-	struct dyplo_buffer_block __user *arg)
+static int datra_dma_to_logic_block_query(struct datra_dma_dev *dma_dev,
+	struct datra_buffer_block __user *arg)
 {
 	__u32 request_id;
 
@@ -2224,17 +2224,17 @@ static int dyplo_dma_to_logic_block_query(struct dyplo_dma_dev *dma_dev,
 	if (request_id >= dma_dev->dma_to_logic_blocks.count)
 		return -EINVAL;
 
-	if (copy_to_user(arg, &dma_dev->dma_to_logic_blocks.blocks[request_id].data, sizeof(struct dyplo_buffer_block)))
+	if (copy_to_user(arg, &dma_dev->dma_to_logic_blocks.blocks[request_id].data, sizeof(struct datra_buffer_block)))
 		return -EFAULT;
 
 	return 0;
 }
 
-static int dyplo_dma_to_logic_block_enqueue(struct dyplo_dma_dev *dma_dev,
-	struct dyplo_buffer_block __user *arg)
+static int datra_dma_to_logic_block_enqueue(struct datra_dma_dev *dma_dev,
+	struct datra_buffer_block __user *arg)
 {
-	struct dyplo_buffer_block request;
-	struct dyplo_dma_block *block;
+	struct datra_buffer_block request;
+	struct datra_dma_block *block;
 	u32 __iomem *control_base = dma_dev->config_parent->control_base;
 
 	if (copy_from_user(&request, arg, sizeof(request)))
@@ -2251,28 +2251,28 @@ static int dyplo_dma_to_logic_block_enqueue(struct dyplo_dma_dev *dma_dev,
 	block->data.user_signal = request.user_signal;
 
 	/* This operation never blocks, unless something is wrong in HW */
-	if (!(dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_STATUS) & 0xFF0000))
+	if (!(datra_reg_read_quick(control_base, DATRA_DMA_TOLOGIC_STATUS) & 0xFF0000))
 		return -EWOULDBLOCK;
 	pr_debug("%s sending addr=%#llx size=%u\n", __func__,
 			(u64)block->phys_addr, block->data.bytes_used);
-	iowrite32_quick(block->phys_addr & 0xFFFFFFFF, control_base + (DYPLO_DMA_TOLOGIC_STARTADDR_LOW>>2));
+	iowrite32_quick(block->phys_addr & 0xFFFFFFFF, control_base + (DATRA_DMA_TOLOGIC_STARTADDR_LOW>>2));
 	if (dma_dev->dma_64bit)
-		iowrite32_quick(block->phys_addr >> 32, control_base + (DYPLO_DMA_TOLOGIC_STARTADDR_HIGH>>2));
-	iowrite32_quick(block->data.user_signal, control_base + (DYPLO_DMA_TOLOGIC_USERBITS>>2));
-	iowrite32(block->data.bytes_used, control_base + (DYPLO_DMA_TOLOGIC_BYTESIZE>>2));
+		iowrite32_quick(block->phys_addr >> 32, control_base + (DATRA_DMA_TOLOGIC_STARTADDR_HIGH>>2));
+	iowrite32_quick(block->data.user_signal, control_base + (DATRA_DMA_TOLOGIC_USERBITS>>2));
+	iowrite32(block->data.bytes_used, control_base + (DATRA_DMA_TOLOGIC_BYTESIZE>>2));
 	block->data.state = 1;
 
-	if (copy_to_user(arg, &block->data, sizeof(struct dyplo_buffer_block)))
+	if (copy_to_user(arg, &block->data, sizeof(struct datra_buffer_block)))
 		return -EFAULT;
 
 	return 0;
 }
 
-static int dyplo_dma_to_logic_block_dequeue(struct dyplo_dma_dev *dma_dev,
-	struct dyplo_buffer_block __user *arg, bool is_blocking)
+static int datra_dma_to_logic_block_dequeue(struct datra_dma_dev *dma_dev,
+	struct datra_buffer_block __user *arg, bool is_blocking)
 {
-	struct dyplo_buffer_block request;
-	struct dyplo_dma_block *block;
+	struct datra_buffer_block request;
+	struct datra_dma_block *block;
 	u32 __iomem *control_base = dma_dev->config_parent->control_base;
 	u32 status;
 	dma_addr_t start_addr;
@@ -2291,7 +2291,7 @@ static int dyplo_dma_to_logic_block_dequeue(struct dyplo_dma_dev *dma_dev,
 		DEFINE_WAIT(wait);
 		for (;;) {
 			prepare_to_wait(&dma_dev->wait_queue_to_logic, &wait, TASK_INTERRUPTIBLE);
-			status = dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_STATUS);
+			status = datra_reg_read_quick(control_base, DATRA_DMA_TOLOGIC_STATUS);
 			if (status & 0xFF000000)
 				break; /* Results available, done waiting */
 			if (signal_pending(current)) {
@@ -2299,18 +2299,18 @@ static int dyplo_dma_to_logic_block_dequeue(struct dyplo_dma_dev *dma_dev,
 				return -ERESTARTSYS;
 			}
 			/* Enable interrupt */
-			dyplo_dma_to_logic_irq_enable(control_base);
+			datra_dma_to_logic_irq_enable(control_base);
 			schedule();
 		}
 		finish_wait(&dma_dev->wait_queue_from_logic, &wait);
 	} else {
-		status = dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_STATUS);
+		status = datra_reg_read_quick(control_base, DATRA_DMA_TOLOGIC_STATUS);
 		if ((status & 0xFF000000) == 0)
 			return -EAGAIN;
 	}
-	start_addr = dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_RESULT_ADDR_LOW);
+	start_addr = datra_reg_read_quick(control_base, DATRA_DMA_TOLOGIC_RESULT_ADDR_LOW);
 	if (dma_dev->dma_64bit)
-		start_addr |= ((dma_addr_t)dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_RESULT_ADDR_HIGH) << 32);
+		start_addr |= ((dma_addr_t)datra_reg_read_quick(control_base, DATRA_DMA_TOLOGIC_RESULT_ADDR_HIGH) << 32);
 
 	if (start_addr != block->phys_addr) {
 		pr_err("%s Expected addr 0x%llx result 0x%llx\n", __func__, (u64)block->phys_addr, (u64)start_addr);
@@ -2319,18 +2319,18 @@ static int dyplo_dma_to_logic_block_dequeue(struct dyplo_dma_dev *dma_dev,
 
 	block->data.state = 0;
 
-	if (copy_to_user(arg, &block->data, sizeof(struct dyplo_buffer_block)))
+	if (copy_to_user(arg, &block->data, sizeof(struct datra_buffer_block)))
 		return -EFAULT;
 
 	return 0;
 }
 
-static int dyplo_dma_common_mmap(struct dyplo_dma_dev *dma_dev,
+static int datra_dma_common_mmap(struct datra_dma_dev *dma_dev,
 	struct vm_area_struct *vma,
-	struct dyplo_dma_block_set* dma_block_set)
+	struct datra_dma_block_set* dma_block_set)
 {
 	const unsigned int count = dma_block_set->count;
-	struct dyplo_dma_block *block = NULL;
+	struct datra_dma_block *block = NULL;
 	unsigned int vm_offset = vma->vm_pgoff << PAGE_SHIFT;
 	unsigned int i;
 
@@ -2342,7 +2342,7 @@ static int dyplo_dma_common_mmap(struct dyplo_dma_dev *dma_dev,
 	vma->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
 #endif
 
-	if (dma_block_set->flags & DYPLO_DMA_BLOCK_FLAG_SHAREDMEM) {
+	if (dma_block_set->flags & DATRA_DMA_BLOCK_FLAG_SHAREDMEM) {
 		block = &dma_block_set->blocks[0];
 		return dma_mmap_coherent(dma_dev->config_parent->parent->device,
 			vma, block->mem_addr, block->phys_addr,
@@ -2372,21 +2372,21 @@ static int dyplo_dma_common_mmap(struct dyplo_dma_dev *dma_dev,
 		vma, block->mem_addr, block->phys_addr, block->data.size);
 }
 
-static int dyplo_dma_to_logic_mmap(struct file *filp, struct vm_area_struct *vma)
+static int datra_dma_to_logic_mmap(struct file *filp, struct vm_area_struct *vma)
 {
-	struct dyplo_dma_dev *dma_dev = filp->private_data;
+	struct datra_dma_dev *dma_dev = filp->private_data;
 
-	return dyplo_dma_common_mmap(dma_dev, vma,
+	return datra_dma_common_mmap(dma_dev, vma,
 		&dma_dev->dma_to_logic_blocks);
 }
 
 /* forward */
-static int dyplo_dma_from_logic_block_free(struct dyplo_dma_dev *dma_dev);
+static int datra_dma_from_logic_block_free(struct datra_dma_dev *dma_dev);
 
-static int dyplo_dma_to_logic_reconfigure(struct dyplo_dma_dev *dma_dev,
-	struct dyplo_dma_configuration_req __user *arg)
+static int datra_dma_to_logic_reconfigure(struct datra_dma_dev *dma_dev,
+	struct datra_dma_configuration_req __user *arg)
 {
-	struct dyplo_dma_configuration_req request;
+	struct datra_dma_configuration_req request;
 	int ret;
 
 	if (copy_from_user(&request, arg, sizeof(request)))
@@ -2395,22 +2395,22 @@ static int dyplo_dma_to_logic_reconfigure(struct dyplo_dma_dev *dma_dev,
 	pr_debug("%s mode=%d count=%u size=%u\n", __func__,
 		request.mode, request.count, request.size);
 
-	dyplo_dma_to_logic_block_free(dma_dev);
+	datra_dma_to_logic_block_free(dma_dev);
 
 	switch (request.mode) {
-		case DYPLO_DMA_MODE_STANDALONE:
+		case DATRA_DMA_MODE_STANDALONE:
 			ret = -EINVAL;
 			break;
-		case DYPLO_DMA_MODE_RINGBUFFER_BOUNCE:
+		case DATRA_DMA_MODE_RINGBUFFER_BOUNCE:
 			request.size = dma_dev->dma_to_logic_block_size;
 			request.count = dma_dev->dma_to_logic_memory_size / dma_dev->dma_to_logic_block_size;
 			ret = 0;
 			break;
-		case DYPLO_DMA_MODE_BLOCK_COHERENT:
-			ret = dyplo_dma_common_block_alloc(dma_dev,
+		case DATRA_DMA_MODE_BLOCK_COHERENT:
+			ret = datra_dma_common_block_alloc(dma_dev,
 				&request, &dma_dev->dma_to_logic_blocks, DMA_TO_DEVICE);
 			break;
-		case DYPLO_DMA_MODE_BLOCK_STREAMING:
+		case DATRA_DMA_MODE_BLOCK_STREAMING:
 			ret = -EINVAL;
 			break;
 		default:
@@ -2425,28 +2425,28 @@ static int dyplo_dma_to_logic_reconfigure(struct dyplo_dma_dev *dma_dev,
 	return 0;
 }
 
-static long dyplo_dma_to_logic_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+static long datra_dma_to_logic_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
-	struct dyplo_dma_dev *dma_dev = filp->private_data;
+	struct datra_dma_dev *dma_dev = filp->private_data;
 	if (unlikely(dma_dev == NULL))
 		return -ENODEV;
 
 	pr_debug("%s cmd=%#x (%d) arg=%#lx\n", __func__, cmd, _IOC_NR(cmd), arg);
 
-	if (_IOC_TYPE(cmd) != DYPLO_IOC_MAGIC)
+	if (_IOC_TYPE(cmd) != DATRA_IOC_MAGIC)
 		return -ENOTTY;
 
 	switch (_IOC_NR(cmd))
 	{
-		case DYPLO_IOC_ROUTE_QUERY_ID:
-			return dyplo_dma_get_route_id(dma_dev);
-		case DYPLO_IOC_ROUTE_TELL_TO_LOGIC:
-			return dyplo_dma_add_route(dma_dev, dyplo_dma_get_route_id(dma_dev), arg);
-		case DYPLO_IOC_ROUTE_TELL_FROM_LOGIC:
+		case DATRA_IOC_ROUTE_QUERY_ID:
+			return datra_dma_get_route_id(dma_dev);
+		case DATRA_IOC_ROUTE_TELL_TO_LOGIC:
+			return datra_dma_add_route(dma_dev, datra_dma_get_route_id(dma_dev), arg);
+		case DATRA_IOC_ROUTE_TELL_FROM_LOGIC:
 			return -ENOTTY; /* Cannot route to this node */
-		case DYPLO_IOC_TRESHOLD_QUERY:
+		case DATRA_IOC_TRESHOLD_QUERY:
 			return dma_dev->dma_to_logic_block_size;
-		case DYPLO_IOC_TRESHOLD_TELL:
+		case DATRA_IOC_TRESHOLD_TELL:
 			if (dma_dev->dma_to_logic_block_size == arg)
 				return 0;
 			if ((dma_dev->dma_to_logic_head != dma_dev->dma_to_logic_tail) ||
@@ -2458,59 +2458,59 @@ static long dyplo_dma_to_logic_ioctl(struct file *filp, unsigned int cmd, unsign
 			dma_dev->dma_to_logic_head = 0;
 			dma_dev->dma_to_logic_tail = 0;
 			return 0;
-		case DYPLO_IOC_RESET_FIFO_WRITE:
-		case DYPLO_IOC_RESET_FIFO_READ:
-			return dyplo_dma_to_logic_reset(dma_dev);
-		case DYPLO_IOC_USERSIGNAL_QUERY:
-			return dyplo_reg_read_quick(dma_dev->config_parent->control_base, DYPLO_DMA_TOLOGIC_USERBITS);
-		case DYPLO_IOC_USERSIGNAL_TELL:
-			iowrite32_quick(arg, dma_dev->config_parent->control_base + (DYPLO_DMA_TOLOGIC_USERBITS>>2));
+		case DATRA_IOC_RESET_FIFO_WRITE:
+		case DATRA_IOC_RESET_FIFO_READ:
+			return datra_dma_to_logic_reset(dma_dev);
+		case DATRA_IOC_USERSIGNAL_QUERY:
+			return datra_reg_read_quick(dma_dev->config_parent->control_base, DATRA_DMA_TOLOGIC_USERBITS);
+		case DATRA_IOC_USERSIGNAL_TELL:
+			iowrite32_quick(arg, dma_dev->config_parent->control_base + (DATRA_DMA_TOLOGIC_USERBITS>>2));
 			return 0;
-		case DYPLO_IOC_DMA_RECONFIGURE:
-			return dyplo_dma_to_logic_reconfigure(dma_dev,
-				(struct dyplo_dma_configuration_req __user *)arg);
-		case DYPLO_IOC_DMABLOCK_ALLOC:
-			return dyplo_dma_to_logic_block_alloc(dma_dev,
-				(struct dyplo_buffer_block_alloc_req __user *)arg);
-		case DYPLO_IOC_DMABLOCK_FREE:
-			return dyplo_dma_to_logic_block_free(dma_dev);
-		case DYPLO_IOC_DMABLOCK_QUERY:
-			return dyplo_dma_to_logic_block_query(dma_dev,
-				(struct dyplo_buffer_block __user *)arg);
-		case DYPLO_IOC_DMABLOCK_ENQUEUE:
-			return dyplo_dma_to_logic_block_enqueue(dma_dev,
-				(struct dyplo_buffer_block __user *)arg);
-		case DYPLO_IOC_DMABLOCK_DEQUEUE:
-			return dyplo_dma_to_logic_block_dequeue(dma_dev,
-				(struct dyplo_buffer_block __user *)arg,
+		case DATRA_IOC_DMA_RECONFIGURE:
+			return datra_dma_to_logic_reconfigure(dma_dev,
+				(struct datra_dma_configuration_req __user *)arg);
+		case DATRA_IOC_DMABLOCK_ALLOC:
+			return datra_dma_to_logic_block_alloc(dma_dev,
+				(struct datra_buffer_block_alloc_req __user *)arg);
+		case DATRA_IOC_DMABLOCK_FREE:
+			return datra_dma_to_logic_block_free(dma_dev);
+		case DATRA_IOC_DMABLOCK_QUERY:
+			return datra_dma_to_logic_block_query(dma_dev,
+				(struct datra_buffer_block __user *)arg);
+		case DATRA_IOC_DMABLOCK_ENQUEUE:
+			return datra_dma_to_logic_block_enqueue(dma_dev,
+				(struct datra_buffer_block __user *)arg);
+		case DATRA_IOC_DMABLOCK_DEQUEUE:
+			return datra_dma_to_logic_block_dequeue(dma_dev,
+				(struct datra_buffer_block __user *)arg,
 				(filp->f_flags & O_NONBLOCK) == 0);
 		default:
 			return -ENOTTY;
 	}
 }
 
-static int dyplo_dma_from_logic_block_free(struct dyplo_dma_dev *dma_dev)
+static int datra_dma_from_logic_block_free(struct datra_dma_dev *dma_dev)
 {
 	/* Reset the device to release all resources */
-	dyplo_dma_from_logic_reset(dma_dev);
-	return dyplo_dma_common_block_free(dma_dev, &dma_dev->dma_from_logic_blocks, DMA_FROM_DEVICE);
+	datra_dma_from_logic_reset(dma_dev);
+	return datra_dma_common_block_free(dma_dev, &dma_dev->dma_from_logic_blocks, DMA_FROM_DEVICE);
 }
 
-static int dyplo_dma_from_logic_block_alloc(struct dyplo_dma_dev *dma_dev,
-	struct dyplo_buffer_block_alloc_req __user *arg)
+static int datra_dma_from_logic_block_alloc(struct datra_dma_dev *dma_dev,
+	struct datra_buffer_block_alloc_req __user *arg)
 {
-	struct dyplo_buffer_block_alloc_req request;
-	struct dyplo_dma_configuration_req r;
+	struct datra_buffer_block_alloc_req request;
+	struct datra_dma_configuration_req r;
 	int ret;
 
 	if (copy_from_user(&request, arg, sizeof(request)))
 		return -EFAULT;
-	r.mode = DYPLO_DMA_MODE_BLOCK_COHERENT;
+	r.mode = DATRA_DMA_MODE_BLOCK_COHERENT;
 	r.size = request.size;
 	r.count = request.count;
 
-	dyplo_dma_from_logic_block_free(dma_dev);
-	ret = dyplo_dma_common_block_alloc(dma_dev, &r,
+	datra_dma_from_logic_block_free(dma_dev);
+	ret = datra_dma_common_block_alloc(dma_dev, &r,
 		&dma_dev->dma_from_logic_blocks, DMA_FROM_DEVICE);
 	if (ret)
 		return ret;
@@ -2523,8 +2523,8 @@ static int dyplo_dma_from_logic_block_alloc(struct dyplo_dma_dev *dma_dev,
 	return 0;
 }
 
-static int dyplo_dma_from_logic_block_query(struct dyplo_dma_dev *dma_dev,
-	struct dyplo_buffer_block __user *arg)
+static int datra_dma_from_logic_block_query(struct datra_dma_dev *dma_dev,
+	struct datra_buffer_block __user *arg)
 {
 	__u32 request_id;
 
@@ -2534,18 +2534,18 @@ static int dyplo_dma_from_logic_block_query(struct dyplo_dma_dev *dma_dev,
 	if (request_id >= dma_dev->dma_from_logic_blocks.count)
 		return -EINVAL;
 
-	if (copy_to_user(arg, &dma_dev->dma_from_logic_blocks.blocks[request_id].data, sizeof(struct dyplo_buffer_block)))
+	if (copy_to_user(arg, &dma_dev->dma_from_logic_blocks.blocks[request_id].data, sizeof(struct datra_buffer_block)))
 		return -EFAULT;
 
 	return 0;
 }
 
-static int dyplo_dma_from_logic_block_enqueue(struct dyplo_dma_dev *dma_dev,
-	struct dyplo_buffer_block __user *arg)
+static int datra_dma_from_logic_block_enqueue(struct datra_dma_dev *dma_dev,
+	struct datra_buffer_block __user *arg)
 {
 	__u32 request_id;
 	__u32 request_bytes_used;
-	struct dyplo_dma_block *block;
+	struct datra_dma_block *block;
 	u32 __iomem *control_base = dma_dev->config_parent->control_base;
 	u32 status_reg;
 
@@ -2566,7 +2566,7 @@ static int dyplo_dma_from_logic_block_enqueue(struct dyplo_dma_dev *dma_dev,
 	
 	/* Should not block here because we never allocate more blocks than
 	 * what fits in the hardware queue. */
-	status_reg = dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_STATUS);
+	status_reg = datra_reg_read_quick(control_base, DATRA_DMA_FROMLOGIC_STATUS);
 	pr_debug("%s status=%#x\n", __func__, status_reg);
 	if (!(status_reg & 0xFF0000))
 		return -EWOULDBLOCK;
@@ -2574,24 +2574,24 @@ static int dyplo_dma_from_logic_block_enqueue(struct dyplo_dma_dev *dma_dev,
 	/* Send to logic */
 	pr_debug("%s sending addr=0x%llx size=%u\n", __func__,
 			(u64)block->phys_addr, block->data.size);
-	iowrite32(block->phys_addr & 0xFFFFFFFF, control_base + (DYPLO_DMA_FROMLOGIC_STARTADDR_LOW>>2));
+	iowrite32(block->phys_addr & 0xFFFFFFFF, control_base + (DATRA_DMA_FROMLOGIC_STARTADDR_LOW>>2));
 	if (dma_dev->dma_64bit)
-		iowrite32(block->phys_addr >> 32, control_base + (DYPLO_DMA_FROMLOGIC_STARTADDR_HIGH>>2));
-	iowrite32(request_bytes_used, control_base + (DYPLO_DMA_FROMLOGIC_BYTESIZE>>2));
+		iowrite32(block->phys_addr >> 32, control_base + (DATRA_DMA_FROMLOGIC_STARTADDR_HIGH>>2));
+	iowrite32(request_bytes_used, control_base + (DATRA_DMA_FROMLOGIC_BYTESIZE>>2));
 	block->data.bytes_used = 0;
 	block->data.state = 1;
 
-	if (copy_to_user(arg, &block->data, sizeof(struct dyplo_buffer_block)))
+	if (copy_to_user(arg, &block->data, sizeof(struct datra_buffer_block)))
 		return -EFAULT;
 
 	return 0;
 }
 
-static int dyplo_dma_from_logic_block_dequeue(struct dyplo_dma_dev *dma_dev,
-	struct dyplo_buffer_block __user *arg, bool is_blocking)
+static int datra_dma_from_logic_block_dequeue(struct datra_dma_dev *dma_dev,
+	struct datra_buffer_block __user *arg, bool is_blocking)
 {
-	struct dyplo_buffer_block request;
-	struct dyplo_dma_block *block;
+	struct datra_buffer_block request;
+	struct datra_dma_block *block;
 	u32 __iomem *control_base = dma_dev->config_parent->control_base;
 	u32 status_reg;
 	dma_addr_t start_addr;
@@ -2610,7 +2610,7 @@ static int dyplo_dma_from_logic_block_dequeue(struct dyplo_dma_dev *dma_dev,
 	for(;;) {
 		if (is_blocking)
 			prepare_to_wait(&dma_dev->wait_queue_from_logic, &wait, TASK_INTERRUPTIBLE);
-		status_reg = dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_STATUS);
+		status_reg = datra_reg_read_quick(control_base, DATRA_DMA_FROMLOGIC_STATUS);
 		pr_debug("%s status=%#x\n", __func__, status_reg);
 		/* TODO: Blocking */
 		if (status_reg & 0xFF000000)
@@ -2621,7 +2621,7 @@ static int dyplo_dma_from_logic_block_dequeue(struct dyplo_dma_dev *dma_dev,
 			return -ERESTARTSYS;
 		}
 		/* Enable interrupt */
-		dyplo_dma_from_logic_irq_enable(control_base);
+		datra_dma_from_logic_irq_enable(control_base);
 		if (!is_blocking)
 			return -EAGAIN;
 		schedule();
@@ -2629,35 +2629,35 @@ static int dyplo_dma_from_logic_block_dequeue(struct dyplo_dma_dev *dma_dev,
 	if (is_blocking)
 		finish_wait(&dma_dev->wait_queue_from_logic, &wait);
 
-	start_addr = dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_RESULT_ADDR_LOW);
+	start_addr = datra_reg_read_quick(control_base, DATRA_DMA_FROMLOGIC_RESULT_ADDR_LOW);
 	if (dma_dev->dma_64bit)
-		start_addr |= ((dma_addr_t)dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_RESULT_ADDR_HIGH) << 32);
+		start_addr |= ((dma_addr_t)datra_reg_read_quick(control_base, DATRA_DMA_FROMLOGIC_RESULT_ADDR_HIGH) << 32);
 	if (start_addr != block->phys_addr) {
 		pr_err("%s Expected addr 0x%llx result 0x%llx\n", __func__, (u64)block->phys_addr, (u64)start_addr);
 		return -EIO;
 	}
-	block->data.user_signal = dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_RESULT_USERBITS);
-	block->data.bytes_used = dyplo_reg_read(control_base, DYPLO_DMA_FROMLOGIC_RESULT_BYTESIZE);
+	block->data.user_signal = datra_reg_read_quick(control_base, DATRA_DMA_FROMLOGIC_RESULT_USERBITS);
+	block->data.bytes_used = datra_reg_read(control_base, DATRA_DMA_FROMLOGIC_RESULT_BYTESIZE);
 	block->data.state = 0;
 
-	if (copy_to_user(arg, &block->data, sizeof(struct dyplo_buffer_block)))
+	if (copy_to_user(arg, &block->data, sizeof(struct datra_buffer_block)))
 		return -EFAULT;
 
 	return 0;
 }
 
-static int dyplo_dma_from_logic_mmap(struct file *filp, struct vm_area_struct *vma)
+static int datra_dma_from_logic_mmap(struct file *filp, struct vm_area_struct *vma)
 {
-	struct dyplo_dma_dev *dma_dev = filp->private_data;
+	struct datra_dma_dev *dma_dev = filp->private_data;
 
-	return dyplo_dma_common_mmap(dma_dev, vma,
+	return datra_dma_common_mmap(dma_dev, vma,
 		&dma_dev->dma_from_logic_blocks);
 }
 
-static int dyplo_dma_from_logic_reconfigure(struct dyplo_dma_dev *dma_dev,
-	struct dyplo_dma_configuration_req __user *arg)
+static int datra_dma_from_logic_reconfigure(struct datra_dma_dev *dma_dev,
+	struct datra_dma_configuration_req __user *arg)
 {
-	struct dyplo_dma_configuration_req request;
+	struct datra_dma_configuration_req request;
 	int ret;
 
 	if (copy_from_user(&request, arg, sizeof(request)))
@@ -2666,22 +2666,22 @@ static int dyplo_dma_from_logic_reconfigure(struct dyplo_dma_dev *dma_dev,
 	pr_debug("%s mode=%d count=%u size=%u\n", __func__,
 		request.mode, request.count, request.size);
 
-	dyplo_dma_from_logic_block_free(dma_dev);
+	datra_dma_from_logic_block_free(dma_dev);
 
 	switch (request.mode) {
-		case DYPLO_DMA_MODE_STANDALONE:
+		case DATRA_DMA_MODE_STANDALONE:
 			ret = -EINVAL;
 			break;
-		case DYPLO_DMA_MODE_RINGBUFFER_BOUNCE:
+		case DATRA_DMA_MODE_RINGBUFFER_BOUNCE:
 			request.size = dma_dev->dma_from_logic_block_size;
 			request.count = dma_dev->dma_from_logic_memory_size / dma_dev->dma_from_logic_block_size;
 			ret = 0;
 			break;
-		case DYPLO_DMA_MODE_BLOCK_COHERENT:
-			ret = dyplo_dma_common_block_alloc(dma_dev,
+		case DATRA_DMA_MODE_BLOCK_COHERENT:
+			ret = datra_dma_common_block_alloc(dma_dev,
 				&request, &dma_dev->dma_from_logic_blocks, DMA_FROM_DEVICE);
 			break;
-		case DYPLO_DMA_MODE_BLOCK_STREAMING:
+		case DATRA_DMA_MODE_BLOCK_STREAMING:
 			ret = -EINVAL;
 			break;
 		default:
@@ -2696,28 +2696,28 @@ static int dyplo_dma_from_logic_reconfigure(struct dyplo_dma_dev *dma_dev,
 	return 0;
 }
 
-static long dyplo_dma_from_logic_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+static long datra_dma_from_logic_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
-	struct dyplo_dma_dev *dma_dev = filp->private_data;
+	struct datra_dma_dev *dma_dev = filp->private_data;
 	if (unlikely(dma_dev == NULL))
 		return -ENODEV;
 
 	pr_debug("%s cmd=%#x (%d) arg=%#lx\n", __func__, cmd, _IOC_NR(cmd), arg);
 
-	if (_IOC_TYPE(cmd) != DYPLO_IOC_MAGIC)
+	if (_IOC_TYPE(cmd) != DATRA_IOC_MAGIC)
 		return -ENOTTY;
 
 	switch (_IOC_NR(cmd))
 	{
-		case DYPLO_IOC_ROUTE_QUERY_ID:
-			return dyplo_dma_get_route_id(dma_dev);
-		case DYPLO_IOC_ROUTE_TELL_TO_LOGIC:
+		case DATRA_IOC_ROUTE_QUERY_ID:
+			return datra_dma_get_route_id(dma_dev);
+		case DATRA_IOC_ROUTE_TELL_TO_LOGIC:
 			return -ENOTTY; /* Cannot route from this node */
-		case DYPLO_IOC_ROUTE_TELL_FROM_LOGIC:
-			return dyplo_dma_add_route(dma_dev, arg, dyplo_dma_get_route_id(dma_dev));
-		case DYPLO_IOC_TRESHOLD_QUERY:
+		case DATRA_IOC_ROUTE_TELL_FROM_LOGIC:
+			return datra_dma_add_route(dma_dev, arg, datra_dma_get_route_id(dma_dev));
+		case DATRA_IOC_TRESHOLD_QUERY:
 			return dma_dev->dma_from_logic_block_size;
-		case DYPLO_IOC_TRESHOLD_TELL:
+		case DATRA_IOC_TRESHOLD_TELL:
 			if (dma_dev->dma_from_logic_block_size == arg)
 				return 0;
 			if ((dma_dev->dma_from_logic_head != dma_dev->dma_from_logic_tail) ||
@@ -2729,90 +2729,90 @@ static long dyplo_dma_from_logic_ioctl(struct file *filp, unsigned int cmd, unsi
 			dma_dev->dma_from_logic_head = 0;
 			dma_dev->dma_from_logic_tail = 0;
 			return 0;
-		case DYPLO_IOC_RESET_FIFO_WRITE:
-		case DYPLO_IOC_RESET_FIFO_READ:
-			return dyplo_dma_from_logic_reset(dma_dev);
-		case DYPLO_IOC_USERSIGNAL_QUERY:
+		case DATRA_IOC_RESET_FIFO_WRITE:
+		case DATRA_IOC_RESET_FIFO_READ:
+			return datra_dma_from_logic_reset(dma_dev);
+		case DATRA_IOC_USERSIGNAL_QUERY:
 			return dma_dev->dma_from_logic_current_op.user_signal;
-		case DYPLO_IOC_USERSIGNAL_TELL:
+		case DATRA_IOC_USERSIGNAL_TELL:
 			return -EACCES;
-		case DYPLO_IOC_DMA_RECONFIGURE:
-			return dyplo_dma_from_logic_reconfigure(dma_dev,
-				(struct dyplo_dma_configuration_req __user *)arg);
-		case DYPLO_IOC_DMABLOCK_ALLOC:
-			return dyplo_dma_from_logic_block_alloc(dma_dev,
-				(struct dyplo_buffer_block_alloc_req __user *)arg);
-		case DYPLO_IOC_DMABLOCK_FREE:
-			return dyplo_dma_from_logic_block_free(dma_dev);
-		case DYPLO_IOC_DMABLOCK_QUERY:
-			return dyplo_dma_from_logic_block_query(dma_dev,
-				(struct dyplo_buffer_block __user *)arg);
-		case DYPLO_IOC_DMABLOCK_ENQUEUE:
-			return dyplo_dma_from_logic_block_enqueue(dma_dev,
-				(struct dyplo_buffer_block __user *)arg);
-		case DYPLO_IOC_DMABLOCK_DEQUEUE:
-			return dyplo_dma_from_logic_block_dequeue(dma_dev,
-				(struct dyplo_buffer_block __user *)arg,
+		case DATRA_IOC_DMA_RECONFIGURE:
+			return datra_dma_from_logic_reconfigure(dma_dev,
+				(struct datra_dma_configuration_req __user *)arg);
+		case DATRA_IOC_DMABLOCK_ALLOC:
+			return datra_dma_from_logic_block_alloc(dma_dev,
+				(struct datra_buffer_block_alloc_req __user *)arg);
+		case DATRA_IOC_DMABLOCK_FREE:
+			return datra_dma_from_logic_block_free(dma_dev);
+		case DATRA_IOC_DMABLOCK_QUERY:
+			return datra_dma_from_logic_block_query(dma_dev,
+				(struct datra_buffer_block __user *)arg);
+		case DATRA_IOC_DMABLOCK_ENQUEUE:
+			return datra_dma_from_logic_block_enqueue(dma_dev,
+				(struct datra_buffer_block __user *)arg);
+		case DATRA_IOC_DMABLOCK_DEQUEUE:
+			return datra_dma_from_logic_block_dequeue(dma_dev,
+				(struct datra_buffer_block __user *)arg,
 				(filp->f_flags & O_NONBLOCK) == 0);
 		default:
 			return -ENOTTY;
 	}
 }
 
-static const struct file_operations dyplo_dma_to_logic_fops =
+static const struct file_operations datra_dma_to_logic_fops =
 {
 	.owner = THIS_MODULE,
-	.write = dyplo_dma_write,
+	.write = datra_dma_write,
 	.llseek = no_llseek,
-	.poll = dyplo_dma_to_logic_poll,
-	.mmap = dyplo_dma_to_logic_mmap,
-	.unlocked_ioctl = dyplo_dma_to_logic_ioctl,
-	.open = dyplo_dma_open,
-	.release = dyplo_dma_to_logic_release,
+	.poll = datra_dma_to_logic_poll,
+	.mmap = datra_dma_to_logic_mmap,
+	.unlocked_ioctl = datra_dma_to_logic_ioctl,
+	.open = datra_dma_open,
+	.release = datra_dma_to_logic_release,
 };
 
-static const struct file_operations dyplo_dma_from_logic_fops =
+static const struct file_operations datra_dma_from_logic_fops =
 {
 	.owner = THIS_MODULE,
-	.read = dyplo_dma_read,
+	.read = datra_dma_read,
 	.llseek = no_llseek,
-	.poll = dyplo_dma_from_logic_poll,
-	.mmap = dyplo_dma_from_logic_mmap,
-	.unlocked_ioctl = dyplo_dma_from_logic_ioctl,
-	.open = dyplo_dma_open,
-	.release = dyplo_dma_from_logic_release,
+	.poll = datra_dma_from_logic_poll,
+	.mmap = datra_dma_from_logic_mmap,
+	.unlocked_ioctl = datra_dma_from_logic_ioctl,
+	.open = datra_dma_open,
+	.release = datra_dma_from_logic_release,
 };
 
 /* Common file operations struct. "open" will set one of the above into
  * the inode. */
-static const struct file_operations dyplo_dma_fops =
+static const struct file_operations datra_dma_fops =
 {
 	.owner = THIS_MODULE,
-	.open = dyplo_dma_open,
+	.open = datra_dma_open,
 };
 
 
 /* Interrupt service routine for DMA node */
-static irqreturn_t dyplo_dma_isr(struct dyplo_dev *dev, struct dyplo_config_dev *cfg_dev)
+static irqreturn_t datra_dma_isr(struct datra_dev *dev, struct datra_config_dev *cfg_dev)
 {
-	struct dyplo_dma_dev *dma_dev = cfg_dev->private_data;
-	u32 status = dyplo_reg_read_quick(
-		cfg_dev->control_base, DYPLO_REG_FIFO_IRQ_STATUS);
+	struct datra_dma_dev *dma_dev = cfg_dev->private_data;
+	u32 status = datra_reg_read_quick(
+		cfg_dev->control_base, DATRA_REG_FIFO_IRQ_STATUS);
 	pr_debug("%s(status=%#x)\n", __func__, status);
 	if (!status)
 		return IRQ_NONE;
 	/* Acknowledge IRQ */
 	iowrite32_quick(status,
-			cfg_dev->control_base + (DYPLO_REG_FIFO_IRQ_CLR>>2));
+			cfg_dev->control_base + (DATRA_REG_FIFO_IRQ_CLR>>2));
 	/* Clear the reset command when done */
 	if (status & BIT(15))
 		iowrite32(
-			dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_DMA_TOLOGIC_CONTROL) & ~BIT(1),
-			cfg_dev->control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2));
+			datra_reg_read_quick(cfg_dev->control_base, DATRA_DMA_TOLOGIC_CONTROL) & ~BIT(1),
+			cfg_dev->control_base + (DATRA_DMA_TOLOGIC_CONTROL>>2));
 	if (status & BIT(31))
 		iowrite32(
-			dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_DMA_FROMLOGIC_CONTROL) & ~BIT(1),
-			cfg_dev->control_base + (DYPLO_DMA_FROMLOGIC_CONTROL>>2));
+			datra_reg_read_quick(cfg_dev->control_base, DATRA_DMA_FROMLOGIC_CONTROL) & ~BIT(1),
+			cfg_dev->control_base + (DATRA_DMA_FROMLOGIC_CONTROL>>2));
 	/* Wake up the proper queues */
 	if (status & (BIT(0) | BIT(15)))
 		wake_up_interruptible(&dma_dev->wait_queue_to_logic);
@@ -2822,78 +2822,78 @@ static irqreturn_t dyplo_dma_isr(struct dyplo_dev *dev, struct dyplo_config_dev 
 }
 
 /* Interrupt service routine for generic nodes (clear RESET command) */
-static irqreturn_t dyplo_generic_isr(struct dyplo_dev *dev, struct dyplo_config_dev *cfg_dev)
+static irqreturn_t datra_generic_isr(struct datra_dev *dev, struct datra_config_dev *cfg_dev)
 {
-	u32 status = dyplo_reg_read_quick(
-		cfg_dev->control_base, DYPLO_REG_FIFO_IRQ_STATUS);
+	u32 status = datra_reg_read_quick(
+		cfg_dev->control_base, DATRA_REG_FIFO_IRQ_STATUS);
 	pr_debug("%s(status=%#x)\n", __func__, status);
 	if (!status)
 		return IRQ_NONE;
 	/* Acknowledge IRQ */
-	dyplo_reg_write_quick(cfg_dev->control_base,
-		DYPLO_REG_FIFO_IRQ_CLR, status);
+	datra_reg_write_quick(cfg_dev->control_base,
+		DATRA_REG_FIFO_IRQ_CLR, status);
 	/* Clear the reset command when done */
 	if (status & BIT(0))
-		dyplo_reg_write_quick(cfg_dev->control_base,
-			DYPLO_REG_NODE_RESET_FIFOS, 0);
+		datra_reg_write_quick(cfg_dev->control_base,
+			DATRA_REG_NODE_RESET_FIFOS, 0);
 	/* TODO: Wake up whomever triggered the reset */
 	return IRQ_HANDLED;
 }
 
-static irqreturn_t dyplo_isr(int irq, void *dev_id)
+static irqreturn_t datra_isr(int irq, void *dev_id)
 {
-	struct dyplo_dev *dev = (struct dyplo_dev*)dev_id;
+	struct datra_dev *dev = (struct datra_dev*)dev_id;
 	u32 mask;
 	int index = 0;
 	irqreturn_t result = IRQ_NONE;
 
-	mask = dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_IRQ_MASK);
+	mask = datra_reg_read_quick(dev->base, DATRA_REG_CONTROL_IRQ_MASK);
 	pr_debug("%s(mask=0x%x)\n", __func__, mask);
 	while (mask) {
 		mask >>= 1; /* CPU node is '0', ctl doesn't need interrupt */
 		if (mask & 1) {
-			struct dyplo_config_dev *cfg_dev = &dev->config_devices[index];
+			struct datra_config_dev *cfg_dev = &dev->config_devices[index];
 			if (cfg_dev->isr && (cfg_dev->isr(dev, cfg_dev) != IRQ_NONE))
 				result = IRQ_HANDLED;
 		}
 		++index;
 	}
 	/* For edge-triggered interrupt, re-arm by writing something */
-	dyplo_reg_write_quick(dev->base, DYPLO_REG_CONTROL_IRQ_REARM, 1);
+	datra_reg_write_quick(dev->base, DATRA_REG_CONTROL_IRQ_REARM, 1);
 	return result;
 }
 
-static int create_sub_devices_cpu_fifo(struct dyplo_config_dev *cfg_dev)
+static int create_sub_devices_cpu_fifo(struct datra_config_dev *cfg_dev)
 {
 	int retval;
-	struct dyplo_fifo_control_dev *fifo_ctl_dev;
-	struct dyplo_dev *dev = cfg_dev->parent;
+	struct datra_fifo_control_dev *fifo_ctl_dev;
+	struct datra_dev *dev = cfg_dev->parent;
 	struct device *device = dev->device;
 	dev_t first_fifo_devt;
 	int fifo_index = 0;
 	struct device *char_device;
-	u32 version_id = dyplo_cfg_get_version_id(cfg_dev);
+	u32 version_id = datra_cfg_get_version_id(cfg_dev);
 	u8 i;
 	u8 number_of_write_fifos;
 	u8 number_of_read_fifos;
 
-	if ((version_id & DYPLO_VERSION_ID_MASK_REVISION) != 0x0100) {
+	if ((version_id & DATRA_VERSION_ID_MASK_REVISION) != 0x0100) {
 		dev_err(device, "Unsupported CPU FIFO node version: %#x\n",
 			version_id);
 		return -EINVAL;
 	}
 
 	fifo_ctl_dev = devm_kzalloc(device,
-		sizeof(struct dyplo_fifo_control_dev), GFP_KERNEL);
+		sizeof(struct datra_fifo_control_dev), GFP_KERNEL);
 	if (!fifo_ctl_dev)
 		return -ENOMEM;
 	fifo_ctl_dev->config_parent = cfg_dev;
 	cfg_dev->private_data = fifo_ctl_dev;
 
-	number_of_write_fifos = dyplo_number_of_output_queues(cfg_dev);
-	number_of_read_fifos = dyplo_number_of_input_queues(cfg_dev);
+	number_of_write_fifos = datra_number_of_output_queues(cfg_dev);
+	number_of_read_fifos = datra_number_of_input_queues(cfg_dev);
 	fifo_ctl_dev->fifo_devices = devm_kcalloc(device,
-		number_of_write_fifos + number_of_read_fifos, sizeof(struct dyplo_fifo_dev),
+		number_of_write_fifos + number_of_read_fifos, sizeof(struct datra_fifo_dev),
 		GFP_KERNEL);
 	if (!fifo_ctl_dev->fifo_devices) {
 		dev_err(device, "No memory for %d fifo devices\n",
@@ -2912,7 +2912,7 @@ static int create_sub_devices_cpu_fifo(struct dyplo_config_dev *cfg_dev)
 		number_of_write_fifos + number_of_read_fifos;
 	fifo_ctl_dev->devt_first_fifo_device = first_fifo_devt;
 
-	cdev_init(&fifo_ctl_dev->cdev_fifo_write, &dyplo_fifo_write_fops);
+	cdev_init(&fifo_ctl_dev->cdev_fifo_write, &datra_fifo_write_fops);
 	fifo_ctl_dev->cdev_fifo_write.owner = THIS_MODULE;
 	retval = cdev_add(&fifo_ctl_dev->cdev_fifo_write,
 		first_fifo_devt, number_of_write_fifos);
@@ -2920,7 +2920,7 @@ static int create_sub_devices_cpu_fifo(struct dyplo_config_dev *cfg_dev)
 		dev_err(device, "cdev_add(cdev_fifo_write) failed\n");
 		goto error_cdev_w;
 	}
-	cdev_init(&fifo_ctl_dev->cdev_fifo_read, &dyplo_fifo_read_fops);
+	cdev_init(&fifo_ctl_dev->cdev_fifo_read, &datra_fifo_read_fops);
 	fifo_ctl_dev->cdev_fifo_read.owner = THIS_MODULE;
 	retval = cdev_add(&fifo_ctl_dev->cdev_fifo_read,
 		first_fifo_devt+number_of_write_fifos, number_of_read_fifos);
@@ -2930,7 +2930,7 @@ static int create_sub_devices_cpu_fifo(struct dyplo_config_dev *cfg_dev)
 	}
 
 	for (i = 0; i < number_of_write_fifos; ++i) {
-		struct dyplo_fifo_dev *fifo_dev = &fifo_ctl_dev->fifo_devices[fifo_index];
+		struct datra_fifo_dev *fifo_dev = &fifo_ctl_dev->fifo_devices[fifo_index];
 		fifo_dev->config_parent = cfg_dev;
 		fifo_dev->index = i;
 		init_waitqueue_head(&fifo_dev->fifo_wait_queue);
@@ -2946,7 +2946,7 @@ static int create_sub_devices_cpu_fifo(struct dyplo_config_dev *cfg_dev)
 		++fifo_index;
 	}
 	for (i = 0; i < number_of_read_fifos; ++i) {
-		struct dyplo_fifo_dev *fifo_dev = &fifo_ctl_dev->fifo_devices[fifo_index];
+		struct datra_fifo_dev *fifo_dev = &fifo_ctl_dev->fifo_devices[fifo_index];
 		fifo_dev->config_parent = cfg_dev;
 		fifo_dev->index = i;
 		init_waitqueue_head(&fifo_dev->fifo_wait_queue);
@@ -2962,7 +2962,7 @@ static int create_sub_devices_cpu_fifo(struct dyplo_config_dev *cfg_dev)
 		++fifo_index;
 	}
 
-	cfg_dev->isr = dyplo_fifo_isr;
+	cfg_dev->isr = datra_fifo_isr;
 
 	dev->count_fifo_write_devices += number_of_write_fifos;
 	dev->count_fifo_read_devices += number_of_read_fifos;
@@ -2983,23 +2983,23 @@ error_register_chrdev_region:
 }
 
 static int create_sub_devices_dma_fifo(
-	struct dyplo_config_dev *cfg_dev)
+	struct datra_config_dev *cfg_dev)
 {
-	struct dyplo_dev *dev = cfg_dev->parent;
+	struct datra_dev *dev = cfg_dev->parent;
 	struct device *device = dev->device;
 	int retval;
 	dev_t first_fifo_devt;
-	struct dyplo_dma_dev* dma_dev;
+	struct datra_dma_dev* dma_dev;
 	struct device *char_device;
-	u32 version_id = dyplo_cfg_get_version_id(cfg_dev);
+	u32 version_id = datra_cfg_get_version_id(cfg_dev);
 
-	if ((version_id & DYPLO_VERSION_ID_MASK_REVISION) != 0x0100) {
+	if ((version_id & DATRA_VERSION_ID_MASK_REVISION) != 0x0100) {
 		dev_err(device, "Unsupported DMA FIFO node revision: %#x\n",
 			version_id);
 		return -EINVAL;
 	}
 
-	dma_dev = devm_kzalloc(device, sizeof(struct dyplo_dma_dev), GFP_KERNEL);
+	dma_dev = devm_kzalloc(device, sizeof(struct datra_dma_dev), GFP_KERNEL);
 	if (!dma_dev) {
 		dev_err(device, "No memory for DMA device\n");
 		return -ENOMEM;
@@ -3017,26 +3017,26 @@ static int create_sub_devices_dma_fifo(
 	dev->devt_last += 1;
 
 	dma_dev->dma_to_logic_memory = dma_alloc_coherent(device,
-		dyplo_dma_memory_size, &dma_dev->dma_to_logic_handle, GFP_DMA | GFP_KERNEL);
+		datra_dma_memory_size, &dma_dev->dma_to_logic_handle, GFP_DMA | GFP_KERNEL);
 	if (!dma_dev->dma_to_logic_memory) {
 		dev_err(device, "Failed dma_alloc_coherent for DMA device\n");
 		retval = -ENOMEM;
 		goto error_dma_to_logic_alloc;
 	}
-	dma_dev->dma_to_logic_memory_size = dyplo_dma_memory_size;
-	dma_dev->dma_to_logic_block_size = dyplo_dma_default_block_size;
+	dma_dev->dma_to_logic_memory_size = datra_dma_memory_size;
+	dma_dev->dma_to_logic_block_size = datra_dma_default_block_size;
 
 	dma_dev->dma_from_logic_memory = dma_alloc_coherent(device,
-		dyplo_dma_memory_size, &dma_dev->dma_from_logic_handle, GFP_DMA | GFP_KERNEL);
+		datra_dma_memory_size, &dma_dev->dma_from_logic_handle, GFP_DMA | GFP_KERNEL);
 	if (!dma_dev->dma_from_logic_memory) {
 		dev_err(device, "Failed dma_alloc_coherent for DMA device\n");
 		retval = -ENOMEM;
 		goto error_dma_from_logic_alloc;
 	}
-	dma_dev->dma_from_logic_memory_size = dyplo_dma_memory_size;
-	dma_dev->dma_from_logic_block_size = dyplo_dma_default_block_size;
+	dma_dev->dma_from_logic_memory_size = datra_dma_memory_size;
+	dma_dev->dma_from_logic_block_size = datra_dma_default_block_size;
 
-	cdev_init(&dma_dev->cdev_dma, &dyplo_dma_fops);
+	cdev_init(&dma_dev->cdev_dma, &datra_dma_fops);
 	dma_dev->cdev_dma.owner = THIS_MODULE;
 	retval = cdev_add(&dma_dev->cdev_dma, first_fifo_devt, 1);
 	if (retval) {
@@ -3055,9 +3055,9 @@ static int create_sub_devices_dma_fifo(
 
 	++dev->number_of_dma_devices;
 	/* Enable the DMA controller */
-	iowrite32_quick(BIT(0), cfg_dev->control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2));
-	iowrite32_quick(BIT(0), cfg_dev->control_base + (DYPLO_DMA_FROMLOGIC_CONTROL>>2));
-	cfg_dev->isr = dyplo_dma_isr;
+	iowrite32_quick(BIT(0), cfg_dev->control_base + (DATRA_DMA_TOLOGIC_CONTROL>>2));
+	iowrite32_quick(BIT(0), cfg_dev->control_base + (DATRA_DMA_FROMLOGIC_CONTROL>>2));
+	cfg_dev->isr = datra_dma_isr;
 
 	return 0;
 
@@ -3077,16 +3077,16 @@ error_register_chrdev_region:
 }
 
 static void destroy_sub_devices_dma_fifo(
-	struct dyplo_config_dev *cfg_dev)
+	struct datra_config_dev *cfg_dev)
 {
-	struct dyplo_dma_dev* dma_dev = cfg_dev->private_data;
+	struct datra_dma_dev* dma_dev = cfg_dev->private_data;
 	struct device *device = cfg_dev->parent->device;
 	/* Free any transfers */
-	dyplo_dma_to_logic_block_free(dma_dev);
-	dyplo_dma_from_logic_block_free(dma_dev);
+	datra_dma_to_logic_block_free(dma_dev);
+	datra_dma_from_logic_block_free(dma_dev);
 	/* Stop the DMA cores */
-	iowrite32_quick(0, cfg_dev->control_base + (DYPLO_DMA_FROMLOGIC_CONTROL>>2));
-	iowrite32_quick(0, cfg_dev->control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2));
+	iowrite32_quick(0, cfg_dev->control_base + (DATRA_DMA_FROMLOGIC_CONTROL>>2));
+	iowrite32_quick(0, cfg_dev->control_base + (DATRA_DMA_TOLOGIC_CONTROL>>2));
 	/* Release internal buffers */
 	dma_free_coherent(device, dma_dev->dma_from_logic_memory_size,
 		dma_dev->dma_from_logic_memory, dma_dev->dma_from_logic_handle);
@@ -3095,66 +3095,66 @@ static void destroy_sub_devices_dma_fifo(
 	device_destroy(cfg_dev->parent->class, dma_dev->cdev_dma.dev);
 }
 
-static int create_sub_devices_icap(struct dyplo_config_dev *cfg_dev)
+static int create_sub_devices_icap(struct datra_config_dev *cfg_dev)
 {
-	struct dyplo_dev *dev = cfg_dev->parent;
-	unsigned int device_index = dyplo_get_config_index(cfg_dev);
+	struct datra_dev *dev = cfg_dev->parent;
+	unsigned int device_index = datra_get_config_index(cfg_dev);
 
-	cfg_dev->isr = dyplo_generic_isr;
+	cfg_dev->isr = datra_generic_isr;
 	dev->icap_device_index = device_index;
 	return 0;
 }
 
-static int create_sub_devices(struct dyplo_config_dev *cfg_dev)
+static int create_sub_devices(struct datra_config_dev *cfg_dev)
 {
-	switch (dyplo_cfg_get_node_type(cfg_dev)) {
-	case DYPLO_TYPE_ID_TOPIC_CPU:
+	switch (datra_cfg_get_node_type(cfg_dev)) {
+	case DATRA_TYPE_ID_TOPIC_CPU:
 		return create_sub_devices_cpu_fifo(cfg_dev);
-	case DYPLO_TYPE_ID_TOPIC_DMA:
+	case DATRA_TYPE_ID_TOPIC_DMA:
 		return create_sub_devices_dma_fifo(cfg_dev);
-	case DYPLO_TYPE_ID_TOPIC_ICAP:
+	case DATRA_TYPE_ID_TOPIC_ICAP:
 		return create_sub_devices_icap(cfg_dev);
 	default:
-		cfg_dev->isr = dyplo_generic_isr;
+		cfg_dev->isr = datra_generic_isr;
 		return 0;
 	}
 }
 
-static void destroy_sub_devices(struct dyplo_config_dev *cfg_dev)
+static void destroy_sub_devices(struct datra_config_dev *cfg_dev)
 {
-	switch (dyplo_cfg_get_node_type(cfg_dev)) {
-		case DYPLO_TYPE_ID_TOPIC_CPU:
+	switch (datra_cfg_get_node_type(cfg_dev)) {
+		case DATRA_TYPE_ID_TOPIC_CPU:
 			break; /* No particular destroy yet */
-		case DYPLO_TYPE_ID_TOPIC_DMA:
+		case DATRA_TYPE_ID_TOPIC_DMA:
 			return destroy_sub_devices_dma_fifo(cfg_dev);
 		default:
 			break;
 	}
 }
 
-static const char* dyplo_type_names[] = {
-	[DYPLO_TYPE_ID_TOPIC_CPU] = "CPU",
-	[DYPLO_TYPE_ID_TOPIC_IO] = "IO",
-	[DYPLO_TYPE_ID_TOPIC_FIXED] = "FIXED",
-	[DYPLO_TYPE_ID_TOPIC_PR] = "PR",
-	[DYPLO_TYPE_ID_TOPIC_DMA] = "DMA",
-	[DYPLO_TYPE_ID_TOPIC_ICAP] = "ICAP",
+static const char* datra_type_names[] = {
+	[DATRA_TYPE_ID_TOPIC_CPU] = "CPU",
+	[DATRA_TYPE_ID_TOPIC_IO] = "IO",
+	[DATRA_TYPE_ID_TOPIC_FIXED] = "FIXED",
+	[DATRA_TYPE_ID_TOPIC_PR] = "PR",
+	[DATRA_TYPE_ID_TOPIC_DMA] = "DMA",
+	[DATRA_TYPE_ID_TOPIC_ICAP] = "ICAP",
 };
-static const char* dyplo_get_type_name(u8 type_id)
+static const char* datra_get_type_name(u8 type_id)
 {
 	const char* result;
-	if (type_id >= ARRAY_SIZE(dyplo_type_names))
+	if (type_id >= ARRAY_SIZE(datra_type_names))
 		return "";
-	result = dyplo_type_names[type_id];
+	result = datra_type_names[type_id];
 	if (!result)
 		return "";
 	return result;
 }
 
-static void dyplo_proc_show_cpu(struct seq_file *m, struct dyplo_config_dev *cfg_dev)
+static void datra_proc_show_cpu(struct seq_file *m, struct datra_config_dev *cfg_dev)
 {
 	__iomem int *control_base = cfg_dev->control_base;
-	struct dyplo_fifo_control_dev *fifo_dev = cfg_dev->private_data;
+	struct datra_fifo_control_dev *fifo_dev = cfg_dev->private_data;
 	unsigned int irq_r_mask;
 	unsigned int irq_r_status;
 	unsigned int irq_w_mask;
@@ -3167,8 +3167,8 @@ static void dyplo_proc_show_cpu(struct seq_file *m, struct dyplo_config_dev *cfg
 		return;
 	}
 
-	irq_w_mask = dyplo_reg_read_quick(control_base, DYPLO_REG_FIFO_IRQ_MASK);
-	irq_w_status = dyplo_reg_read_quick(control_base, DYPLO_REG_FIFO_IRQ_STATUS);
+	irq_w_mask = datra_reg_read_quick(control_base, DATRA_REG_FIFO_IRQ_MASK);
+	irq_w_status = datra_reg_read_quick(control_base, DATRA_REG_FIFO_IRQ_STATUS);
 	irq_r_mask = irq_w_mask >> 16;
 	irq_w_mask &= 0xFFFF;
 	irq_r_status = irq_w_status >> 16;
@@ -3184,9 +3184,9 @@ static void dyplo_proc_show_cpu(struct seq_file *m, struct dyplo_config_dev *cfg
 		unsigned int tr_r;
 		seq_printf(m, "  fifo=%2d ", i);
 		if (i < fifo_dev->number_of_fifo_write_devices) {
-			int lw = dyplo_fifo_write_level(&fifo_dev->fifo_devices[i]);
-			int tw = dyplo_reg_read_quick_index(control_base, DYPLO_REG_FIFO_WRITE_THD_BASE, i);
-			u32 us = dyplo_reg_read_quick_index(control_base, DYPLO_REG_FIFO_WRITE_USERSIGNAL_BASE, i);
+			int lw = datra_fifo_write_level(&fifo_dev->fifo_devices[i]);
+			int tw = datra_reg_read_quick_index(control_base, DATRA_REG_FIFO_WRITE_THD_BASE, i);
+			u32 us = datra_reg_read_quick_index(control_base, DATRA_REG_FIFO_WRITE_USERSIGNAL_BASE, i);
 			seq_printf(m, "%c=%3d %x (%3d%c%c) ",
 				fifo_dev->fifo_devices[i].is_open ? 'W' : 'w',
 				lw, us, tw,
@@ -3199,8 +3199,8 @@ static void dyplo_proc_show_cpu(struct seq_file *m, struct dyplo_config_dev *cfg
 			tr_w = 0;
 		}
 		if (i < fifo_dev->number_of_fifo_read_devices) {
-			u32 lr = dyplo_fifo_read_level(&fifo_dev->fifo_devices[fifo_dev->number_of_fifo_write_devices + i]);
-			u32 tr = dyplo_reg_read_quick_index(control_base, DYPLO_REG_FIFO_READ_THD_BASE, i);
+			u32 lr = datra_fifo_read_level(&fifo_dev->fifo_devices[fifo_dev->number_of_fifo_write_devices + i]);
+			u32 tr = datra_reg_read_quick_index(control_base, DATRA_REG_FIFO_READ_THD_BASE, i);
 			seq_printf(m, "%c=%3d %x (%3u%c%c) ",
 				fifo_dev->fifo_devices[fifo_dev->number_of_fifo_write_devices + i].is_open ? 'R' : 'r',
 				lr & 0xFFFF, lr >> 16, tr,
@@ -3215,14 +3215,14 @@ static void dyplo_proc_show_cpu(struct seq_file *m, struct dyplo_config_dev *cfg
 		seq_printf(m, "total w=%d r=%d\n", tr_w, tr_r);
 	}
 	seq_printf(m, "  Counters: read=%u write=%u\n",
-		dyplo_reg_read_quick(control_base, DYPLO_REG_FIFO_READ_COUNT),
-		dyplo_reg_read_quick(control_base, DYPLO_REG_FIFO_WRITE_COUNT));
+		datra_reg_read_quick(control_base, DATRA_REG_FIFO_READ_COUNT),
+		datra_reg_read_quick(control_base, DATRA_REG_FIFO_WRITE_COUNT));
 }
 
-static void dyplo_proc_show_dma(struct seq_file *m, struct dyplo_config_dev *cfg_dev)
+static void datra_proc_show_dma(struct seq_file *m, struct datra_config_dev *cfg_dev)
 {
 	/* __iomem int *control_base = cfg_dev->control_base; */
-	struct dyplo_dma_dev *dma_dev = cfg_dev->private_data;
+	struct datra_dma_dev *dma_dev = cfg_dev->private_data;
 	u32 status;
 
 	if (!dma_dev) {
@@ -3242,7 +3242,7 @@ static void dyplo_proc_show_dma(struct seq_file *m, struct dyplo_config_dev *cfg
 			dma_dev->dma_to_logic_memory_size,
 			dma_dev->dma_to_logic_head,
 			dma_dev->dma_to_logic_tail);
-	status = dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_DMA_TOLOGIC_STATUS);
+	status = datra_reg_read_quick(cfg_dev->control_base, DATRA_DMA_TOLOGIC_STATUS);
 	seq_printf(m, " re=%u fr=%u idle=%c\n",
 		status >> 24, (status >> 16) & 0xFF, (status & 0x01) ? 'Y' : 'N');
 
@@ -3259,59 +3259,59 @@ static void dyplo_proc_show_dma(struct seq_file *m, struct dyplo_config_dev *cfg
 			dma_dev->dma_from_logic_head,
 			dma_dev->dma_from_logic_tail,
 			dma_dev->dma_from_logic_full ? 'Y':'N');
-	status = dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_DMA_FROMLOGIC_STATUS);
+	status = datra_reg_read_quick(cfg_dev->control_base, DATRA_DMA_FROMLOGIC_STATUS);
 	seq_printf(m, " re=%u fr=%u idle=%c\n",
 		status >> 24, (status >> 16) & 0xFF, (status & 0x01) ? 'Y' : 'N');
 }
 
 
-static int dyplo_proc_show(struct seq_file *m, void *offset)
+static int datra_proc_show(struct seq_file *m, void *offset)
 {
-	struct dyplo_dev *dev = m->private;
+	struct datra_dev *dev = m->private;
 	unsigned int i;
 	int ctl_index;
 
 	if (dev == NULL) {
-		seq_printf(m, "No dyplo device instance!\n");
+		seq_printf(m, "No datra device instance!\n");
 		return 0;
 	}
 	seq_printf(m, "ncfg=%d, nfifo w=%u r=%u, ndma=%u id=%#x\n",
 		dev->number_of_config_devices,
 		dev->count_fifo_write_devices, dev->count_fifo_read_devices,
 		dev->number_of_dma_devices,
-		dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_STATIC_ID));
+		datra_reg_read_quick(dev->base, DATRA_REG_CONTROL_STATIC_ID));
 
 	seq_printf(m, "Route table:\n");
 	for (ctl_index = 0; ctl_index < dev->number_of_config_devices; ++ctl_index)
 	{
 		int queue_index;
-		struct dyplo_config_dev *cfg_dev =
+		struct datra_config_dev *cfg_dev =
 				&dev->config_devices[ctl_index];
 		u32 __iomem *ctl_route_base = dev->base +
-			(DYPLO_REG_CONTROL_ROUTE_TABLE>>2) +
-			(ctl_index << DYPLO_STREAM_ID_WIDTH);
+			(DATRA_REG_CONTROL_ROUTE_TABLE>>2) +
+			(ctl_index << DATRA_STREAM_ID_WIDTH);
 		const int number_of_fifos_out =
-				dyplo_number_of_output_queues(cfg_dev);
+				datra_number_of_output_queues(cfg_dev);
 		const int number_of_fifos_in =
-				dyplo_number_of_input_queues(cfg_dev);
-		u8 node_type = dyplo_cfg_get_node_type(cfg_dev);
+				datra_number_of_input_queues(cfg_dev);
+		u8 node_type = datra_cfg_get_node_type(cfg_dev);
 
 		seq_printf(m, "ctl_index=%d (%c%c) type=%d (%s) id=%#x fifos in=%d out=%d\n",
 				ctl_index,
 				(cfg_dev->open_mode & FMODE_READ) ? 'r' : '-',
 				(cfg_dev->open_mode & FMODE_WRITE) ? 'w' : '-',
-				node_type, dyplo_get_type_name(node_type),
-				dyplo_cfg_get_version_id(cfg_dev),
+				node_type, datra_get_type_name(node_type),
+				datra_cfg_get_version_id(cfg_dev),
 				number_of_fifos_in, number_of_fifos_out);
 
 		switch (node_type) {
-			case DYPLO_TYPE_ID_TOPIC_CPU:
+			case DATRA_TYPE_ID_TOPIC_CPU:
 				seq_printf(m, " CPU FIFO node\n");
-				dyplo_proc_show_cpu(m, cfg_dev);
+				datra_proc_show_cpu(m, cfg_dev);
 				break;
-			case DYPLO_TYPE_ID_TOPIC_DMA:
+			case DATRA_TYPE_ID_TOPIC_DMA:
 				seq_printf(m, " DMA transfer node\n");
-				dyplo_proc_show_dma(m, cfg_dev);
+				datra_proc_show_dma(m, cfg_dev);
 				break;
 		}
 
@@ -3320,10 +3320,10 @@ static int dyplo_proc_show(struct seq_file *m, void *offset)
 			u32 route = ioread32_quick(ctl_route_base + queue_index);
 			if (route)
 			{
-				int src_ctl_index = route >> DYPLO_STREAM_ID_WIDTH;
+				int src_ctl_index = route >> DATRA_STREAM_ID_WIDTH;
 				if (src_ctl_index > 0)
 				{
-					int src_index = route & ( (0x1 << DYPLO_STREAM_ID_WIDTH) - 1);
+					int src_index = route & ( (0x1 << DATRA_STREAM_ID_WIDTH) - 1);
 					seq_printf(m, " route %d,%d -> %d,%d\n",
 						ctl_index, queue_index, src_ctl_index-1, src_index);
 				}
@@ -3332,21 +3332,21 @@ static int dyplo_proc_show(struct seq_file *m, void *offset)
 	}
 	seq_printf(m, "Backplane counters:\n F2B:");
 	for (i = 0; i < dev->number_of_config_devices; ++i)
-		seq_printf(m, " %u", dyplo_reg_read_quick_index(
-			dev->base, DYPLO_REG_BACKPLANE_COUNTER_F2B_BASE, i));
+		seq_printf(m, " %u", datra_reg_read_quick_index(
+			dev->base, DATRA_REG_BACKPLANE_COUNTER_F2B_BASE, i));
 	seq_printf(m, "\n B2F:");
 	for (i = 0; i < dev->number_of_config_devices; ++i)
-		seq_printf(m, " %u", dyplo_reg_read_quick_index(
-			dev->base, DYPLO_REG_BACKPLANE_COUNTER_B2F_BASE, i));
+		seq_printf(m, " %u", datra_reg_read_quick_index(
+			dev->base, DATRA_REG_BACKPLANE_COUNTER_B2F_BASE, i));
 	seq_printf(m, "\n BPT:");
 	for (i = 0; i < dev->number_of_config_devices; ++i)
-		seq_printf(m, " %u", dyplo_reg_read_quick_index(
-			dev->base, DYPLO_REG_BACKPLANE_COUNTER_BPT_BASE, i));
+		seq_printf(m, " %u", datra_reg_read_quick_index(
+			dev->base, DATRA_REG_BACKPLANE_COUNTER_BPT_BASE, i));
 	seq_printf(m, "\nAXI overhead: r=%u w=%u\n",
-		dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_AXI_READ),
-		dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_AXI_WRITE));
+		datra_reg_read_quick(dev->base, DATRA_REG_CONTROL_AXI_READ),
+		datra_reg_read_quick(dev->base, DATRA_REG_CONTROL_AXI_WRITE));
 
-	if (!((dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_LICENSE_INFO)) & 1))
+	if (!((datra_reg_read_quick(dev->base, DATRA_REG_CONTROL_LICENSE_INFO)) & 1))
 		seq_printf(m, "WARNING: License expired, logic is locked.\n");
 
 	return 0;
@@ -3355,48 +3355,48 @@ static int dyplo_proc_show(struct seq_file *m, void *offset)
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 17, 0)
 #    define PDE_DATA(i) pde_data(i)
 #endif
-static int dyplo_proc_open(struct inode *inode, struct file *file)
+static int datra_proc_open(struct inode *inode, struct file *file)
 {
-    return single_open(file, dyplo_proc_show, PDE_DATA(inode));
+    return single_open(file, datra_proc_show, PDE_DATA(inode));
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
-static const struct proc_ops dyplo_proc_fops = {
-	.proc_open	= dyplo_proc_open,
+static const struct proc_ops datra_proc_fops = {
+	.proc_open	= datra_proc_open,
 	.proc_read	= seq_read,
 	.proc_lseek	= seq_lseek,
 	.proc_release	= single_release,
 };
 #else
-static const struct file_operations dyplo_proc_fops = {
+static const struct file_operations datra_proc_fops = {
 	.owner	= THIS_MODULE,
-	.open	= dyplo_proc_open,
+	.open	= datra_proc_open,
 	.read	= seq_read,
 	.llseek	= seq_lseek,
 	.release = single_release,
 };
 #endif
 
-static int dyplo_core_check_version(struct device *device, struct dyplo_dev *dev)
+static int datra_core_check_version(struct device *device, struct datra_dev *dev)
 {
-	u32 dyplo_version = dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_DYPLO_VERSION);
+	u32 datra_version = datra_reg_read_quick(dev->base, DATRA_REG_CONTROL_DATRA_VERSION);
 
-	dev_info(device, "Dyplo version %d.%d.%02x\n",
-		dyplo_version >> 16, (dyplo_version >> 8) & 0xFF,
-		dyplo_version & 0xFF);
-	if ((dyplo_version >> 16) != 2015) {
+	dev_info(device, "Datra version %d.%d.%02x\n",
+		datra_version >> 16, (datra_version >> 8) & 0xFF,
+		datra_version & 0xFF);
+	if ((datra_version >> 16) != 2015) {
 		dev_err(device, "Unsupported version, only 2015 interface supported\n");
 		return -EINVAL;
 	}
 	return 0;
 }
 
-static u32 dyplo_core_get_number_of_config_devices(struct dyplo_dev *dev)
+static u32 datra_core_get_number_of_config_devices(struct datra_dev *dev)
 {
 	u32 count1 =
-		dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_NODE_COUNT_1);
+		datra_reg_read_quick(dev->base, DATRA_REG_CONTROL_NODE_COUNT_1);
 	u32 count2 =
-		dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_NODE_COUNT_2);
+		datra_reg_read_quick(dev->base, DATRA_REG_CONTROL_NODE_COUNT_2);
 
 	return
 		((count1 >> 24) & 0xFF) +
@@ -3409,21 +3409,21 @@ static u32 dyplo_core_get_number_of_config_devices(struct dyplo_dev *dev)
 		((count2      ) & 0xFF);
 }
 
-void dyplo_core_apply_license(struct dyplo_dev *dev, const void *data)
+void datra_core_apply_license(struct datra_dev *dev, const void *data)
 {
 	u32 key;
 
 	key = get_unaligned_le32(data);
-	dyplo_reg_write_quick(dev->base,
-		DYPLO_REG_CONTROL_LICENSE_KEY0, key);
+	datra_reg_write_quick(dev->base,
+		DATRA_REG_CONTROL_LICENSE_KEY0, key);
 	key = get_unaligned_le32((const u8*)data + 4);
-	dyplo_reg_write_quick(dev->base,
-		DYPLO_REG_CONTROL_LICENSE_KEY1, key);
+	datra_reg_write_quick(dev->base,
+		DATRA_REG_CONTROL_LICENSE_KEY1, key);
 }
 
-static u32 dyplo_core_get_dma_addr_bus_width(struct dyplo_dev *dev)
+static u32 datra_core_get_dma_addr_bus_width(struct datra_dev *dev)
 {
-	u32 ret = dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_DMA_ADDR_WIDTH);
+	u32 ret = datra_reg_read_quick(dev->base, DATRA_REG_CONTROL_DMA_ADDR_WIDTH);
 
 	/* old logic may return 0 instead of 32 */
 	if (!ret)
@@ -3432,7 +3432,7 @@ static u32 dyplo_core_get_dma_addr_bus_width(struct dyplo_dev *dev)
 	return ret;
 }
 
-int dyplo_core_probe(struct device *device, struct dyplo_dev *dev)
+int datra_core_probe(struct device *device, struct datra_dev *dev)
 {
 	dev_t devt;
 	int retval;
@@ -3443,35 +3443,35 @@ int dyplo_core_probe(struct device *device, struct dyplo_dev *dev)
 	sema_init(&dev->fop_sem, 1);
 	dev->device = device;
 
-	retval = dyplo_core_check_version(device, dev);
+	retval = datra_core_check_version(device, dev);
 	if (unlikely(retval))
 		return retval;
 
 	/* Check DMA node address bus width and set dma_bit_mask accordingly */
-	dev->dma_addr_bits = dyplo_core_get_dma_addr_bus_width(dev);
+	dev->dma_addr_bits = datra_core_get_dma_addr_bus_width(dev);
 	retval = dma_set_mask_and_coherent(device, DMA_BIT_MASK(dev->dma_addr_bits));
 	if (unlikely(retval))
 		dev_warn(device, "Failed to set DMA mask: %d", retval);
 
 	dev->number_of_config_devices =
-		dyplo_core_get_number_of_config_devices(dev);
+		datra_core_get_number_of_config_devices(dev);
 
 	dev->config_devices = devm_kcalloc(device,
-		dev->number_of_config_devices, sizeof(struct dyplo_config_dev),
+		dev->number_of_config_devices, sizeof(struct datra_config_dev),
 		GFP_KERNEL);
 	if (!dev->config_devices) {
 		dev_err(device, "No memory for %d cfg devices\n", dev->number_of_config_devices);
 		return -ENOMEM;
 	}
 
-	/* Create /dev/dyplo.. devices */
+	/* Create /dev/datra.. devices */
 	retval = alloc_chrdev_region(&devt, 0, dev->number_of_config_devices + 1, DRIVER_CLASS_NAME);
 	if (retval < 0)
 		return retval;
 	dev->devt = devt;
 	dev->devt_last = devt + dev->number_of_config_devices + 1;
 
-	cdev_init(&dev->cdev_control, &dyplo_ctl_fops);
+	cdev_init(&dev->cdev_control, &datra_ctl_fops);
 	dev->cdev_control.owner = THIS_MODULE;
 	retval = cdev_add(&dev->cdev_control, devt, 1);
 	if (retval) {
@@ -3479,7 +3479,7 @@ int dyplo_core_probe(struct device *device, struct dyplo_dev *dev)
 		goto failed_cdev;
 	}
 
-	cdev_init(&dev->cdev_config, &dyplo_cfg_fops);
+	cdev_init(&dev->cdev_config, &datra_cfg_fops);
 	dev->cdev_config.owner = THIS_MODULE;
 	retval = cdev_add(&dev->cdev_config, devt + 1, dev->number_of_config_devices);
 	if (retval) {
@@ -3509,24 +3509,24 @@ int dyplo_core_probe(struct device *device, struct dyplo_dev *dev)
 		goto failed_device_create;
 	}
 
-	retval = devm_request_irq(device, dev->irq, dyplo_isr, IRQF_TRIGGER_HIGH,
+	retval = devm_request_irq(device, dev->irq, datra_isr, IRQF_TRIGGER_HIGH,
 		DRIVER_CLASS_NAME, dev);
 	if (retval) {
 		dev_err(device, "Cannot claim IRQ\n");
 		goto failed_request_irq;
 	}
 	/* For edge-triggered interrupt, re-arm by writing something */
-	dyplo_reg_write_quick(dev->base, DYPLO_REG_CONTROL_IRQ_REARM, 1);
+	datra_reg_write_quick(dev->base, DATRA_REG_CONTROL_IRQ_REARM, 1);
 
 	while (device_index < dev->number_of_config_devices)
 	{
-		struct dyplo_config_dev* cfg_dev =
+		struct datra_config_dev* cfg_dev =
 				&dev->config_devices[device_index];
 		cfg_dev->parent = dev;
 		cfg_dev->base =
-			(dev->base + ((DYPLO_CONFIG_SIZE>>2) * (device_index + 1)));
+			(dev->base + ((DATRA_CONFIG_SIZE>>2) * (device_index + 1)));
 		cfg_dev->control_base =
-			(dev->base + ((DYPLO_NODE_REG_SIZE>>2) * (device_index + 1)));
+			(dev->base + ((DATRA_NODE_REG_SIZE>>2) * (device_index + 1)));
 
 		char_device = device_create(dev->class, device,
 			devt + 1 + device_index,
@@ -3546,12 +3546,12 @@ int dyplo_core_probe(struct device *device, struct dyplo_dev *dev)
 		++device_index;
 	}
 
-	proc_file_entry = proc_create_data(DRIVER_CLASS_NAME, 0444, NULL, &dyplo_proc_fops, dev);
+	proc_file_entry = proc_create_data(DRIVER_CLASS_NAME, 0444, NULL, &datra_proc_fops, dev);
 	if (proc_file_entry == NULL)
 		dev_err(device, "unable to create proc entry\n");
 
 	/* And finally, enable the backplane */
-	dyplo_reg_write_quick(dev->base, DYPLO_REG_BACKPLANE_ENABLE_SET,
+	datra_reg_write_quick(dev->base, DATRA_REG_BACKPLANE_ENABLE_SET,
 		(2 << dev->number_of_config_devices) - 1);
 
 	return 0;
@@ -3569,9 +3569,9 @@ failed_cdev:
 	unregister_chrdev_region(devt, dev->number_of_config_devices + 1);
 	return retval;
 }
-EXPORT_SYMBOL(dyplo_core_probe);
+EXPORT_SYMBOL(datra_core_probe);
 
-int dyplo_core_remove(struct device *device, struct dyplo_dev *dev)
+int datra_core_remove(struct device *device, struct datra_dev *dev)
 {
 	int i;
 
@@ -3589,4 +3589,4 @@ int dyplo_core_remove(struct device *device, struct dyplo_dev *dev)
 
 	return 0;
 }
-EXPORT_SYMBOL(dyplo_core_remove);
+EXPORT_SYMBOL(datra_core_remove);
