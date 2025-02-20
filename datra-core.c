@@ -39,6 +39,7 @@
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/dma-mapping.h>
+#include <linux/iopoll.h>
 #include <linux/kfifo.h>
 #include "datra-core.h"
 #include "datra-ioctl.h"
@@ -2992,12 +2993,18 @@ static int create_sub_devices_dma_fifo(
 	struct datra_dma_dev* dma_dev;
 	struct device *char_device;
 	u32 version_id = datra_cfg_get_version_id(cfg_dev);
+	u32 val;
 
 	if ((version_id & DATRA_VERSION_ID_MASK_REVISION) != 0x0100) {
 		dev_err(device, "Unsupported DMA FIFO node revision: %#x\n",
 			version_id);
 		return -EINVAL;
 	}
+
+	/* Reset the DMA controller, in case the PL didn't reset along with the system */
+	datra_reg_write_quick(cfg_dev->control_base, DATRA_REG_FIFO_IRQ_SET, BIT(15) | BIT(31));
+	datra_reg_write_quick(cfg_dev->control_base, DATRA_DMA_TOLOGIC_CONTROL, BIT(1));
+	datra_reg_write_quick(cfg_dev->control_base, DATRA_DMA_FROMLOGIC_CONTROL, BIT(1));
 
 	dma_dev = devm_kzalloc(device, sizeof(struct datra_dma_dev), GFP_KERNEL);
 	if (!dma_dev) {
@@ -3053,11 +3060,20 @@ static int create_sub_devices_dma_fifo(
 
 	dma_dev->dma_64bit = dev->dma_addr_bits > 32;
 
+	/* Interrupts not active yet, so wait for reset to complete by looking at IRQ status register */
+	retval = readl_poll_timeout(cfg_dev->control_base + (DATRA_REG_FIFO_IRQ_STATUS>>2),
+			val, (val & (BIT(15) | BIT(31))) == (BIT(15) | BIT(31)),
+			1 /* us */, 20 /* timeout */);
+	if (retval)
+		dev_warn(device, "DMA device %d failed to reset ists=0x%x\n", dev->number_of_dma_devices, val);
+	/* Clear interrupt */
+	datra_reg_write_quick(cfg_dev->control_base, DATRA_REG_FIFO_IRQ_CLR, val);
 	++dev->number_of_dma_devices;
-	/* Enable the DMA controller */
-	iowrite32_quick(BIT(0), cfg_dev->control_base + (DATRA_DMA_TOLOGIC_CONTROL>>2));
-	iowrite32_quick(BIT(0), cfg_dev->control_base + (DATRA_DMA_FROMLOGIC_CONTROL>>2));
 	cfg_dev->isr = datra_dma_isr;
+
+	/* Enable the DMA controller */
+	datra_reg_write_quick(cfg_dev->control_base, DATRA_DMA_TOLOGIC_CONTROL, BIT(0));
+	datra_reg_write_quick(cfg_dev->control_base, DATRA_DMA_FROMLOGIC_CONTROL, BIT(0));
 
 	return 0;
 
