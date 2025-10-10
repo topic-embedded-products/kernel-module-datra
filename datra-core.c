@@ -791,7 +791,7 @@ static ssize_t datra_cfg_write (struct file *filp, const char __user *buf, size_
 	return datra_generic_write(cfg_dev->base, buf, count, f_pos);
 }
 
-loff_t datra_cfg_llseek(struct file *filp, loff_t off, int whence)
+static loff_t datra_cfg_llseek(struct file *filp, loff_t off, int whence)
 {
     loff_t newpos;
 
