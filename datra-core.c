@@ -34,7 +34,6 @@
 #include <linux/slab.h>
 #include <linux/poll.h>
 #include <asm/uaccess.h>
-#include <asm/unaligned.h>
 #include <asm/io.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
@@ -48,6 +47,11 @@
 #include <linux/version.h>
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
 #include <linux/sched/signal.h>
+#endif
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
+#  include <linux/unaligned.h>
+#else
+#  include <asm/unaligned.h>
 #endif
 
 MODULE_LICENSE("GPL");
@@ -1198,7 +1202,6 @@ static const struct file_operations datra_fifo_read_fops =
 {
 	.owner = THIS_MODULE,
 	.read = datra_fifo_read_read,
-	.llseek = no_llseek,
 	.poll = datra_fifo_read_poll,
 	.unlocked_ioctl = datra_fifo_rw_ioctl,
 	.open = datra_fifo_read_open,
@@ -1397,7 +1400,6 @@ static const struct file_operations datra_fifo_write_fops =
 {
 	.write = datra_fifo_write_write,
 	.poll = datra_fifo_write_poll,
-	.llseek = no_llseek,
 	.unlocked_ioctl = datra_fifo_rw_ioctl,
 	.open = datra_fifo_write_open,
 	.release = datra_fifo_write_release,
@@ -2764,7 +2766,6 @@ static const struct file_operations datra_dma_to_logic_fops =
 {
 	.owner = THIS_MODULE,
 	.write = datra_dma_write,
-	.llseek = no_llseek,
 	.poll = datra_dma_to_logic_poll,
 	.mmap = datra_dma_to_logic_mmap,
 	.unlocked_ioctl = datra_dma_to_logic_ioctl,
@@ -2776,7 +2777,6 @@ static const struct file_operations datra_dma_from_logic_fops =
 {
 	.owner = THIS_MODULE,
 	.read = datra_dma_read,
-	.llseek = no_llseek,
 	.poll = datra_dma_from_logic_poll,
 	.mmap = datra_dma_from_logic_mmap,
 	.unlocked_ioctl = datra_dma_from_logic_ioctl,

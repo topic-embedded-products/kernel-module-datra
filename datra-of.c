@@ -32,6 +32,7 @@
 #include <linux/init.h>
 #include <linux/nvmem-consumer.h>
 #include <linux/slab.h>
+#include <linux/version.h>
 #include "datra-core.h"
 #include "datra.h"
 
@@ -94,16 +95,19 @@ static int datra_probe(struct platform_device *pdev)
 	return datra_core_probe(device, dev);
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
+static void datra_remove(struct platform_device *pdev)
+#else
 static int datra_remove(struct platform_device *pdev)
+#endif
 {
 	struct device *device = &pdev->dev;
-	struct datra_dev *dev;
-	
-	dev = dev_get_drvdata(device);
-	if (!dev)
-		return -ENODEV;
+	struct datra_dev *dev = dev_get_drvdata(device);
 
-	return datra_core_remove(device, dev);
+	datra_core_remove(device, dev);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 0)
+	return 0;
+#endif
 }
 
 
