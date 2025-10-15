@@ -3001,11 +3001,6 @@ static int create_sub_devices_dma_fifo(
 		return -EINVAL;
 	}
 
-	/* Reset the DMA controller, in case the PL didn't reset along with the system */
-	datra_reg_write_quick(cfg_dev->control_base, DATRA_REG_FIFO_IRQ_SET, BIT(15) | BIT(31));
-	datra_reg_write_quick(cfg_dev->control_base, DATRA_DMA_TOLOGIC_CONTROL, BIT(1));
-	datra_reg_write_quick(cfg_dev->control_base, DATRA_DMA_FROMLOGIC_CONTROL, BIT(1));
-
 	dma_dev = devm_kzalloc(device, sizeof(struct datra_dma_dev), GFP_KERNEL);
 	if (!dma_dev) {
 		dev_err(device, "No memory for DMA device\n");
@@ -3060,16 +3055,30 @@ static int create_sub_devices_dma_fifo(
 
 	dma_dev->dma_64bit = dev->dma_addr_bits > 32;
 
-	/* Interrupts not active yet, so wait for reset to complete by looking at IRQ status register */
+	cfg_dev->isr = datra_dma_isr;
+
+	/* Reset the DMA controller, in case the PL didn't reset along with the system */
+	datra_reg_write_quick(cfg_dev->control_base, DATRA_REG_FIFO_IRQ_SET, BIT(15) | BIT(31));
+	datra_reg_write_quick(cfg_dev->control_base, DATRA_DMA_TOLOGIC_CONTROL, BIT(1));
+	datra_reg_write_quick(cfg_dev->control_base, DATRA_DMA_FROMLOGIC_CONTROL, BIT(1));
+
+	/* Interrupts may not be active yet, so wait for reset to complete by looking at IRQ status register.
+	 * Also poll the reset registers in case the interrupt routine beat us to the punch. */
 	retval = readl_poll_timeout(cfg_dev->control_base + (DATRA_REG_FIFO_IRQ_STATUS>>2),
-			val, (val & (BIT(15) | BIT(31))) == (BIT(15) | BIT(31)),
+			val, (val & (BIT(15) | BIT(31))) == (BIT(15) | BIT(31)) ||
+				(datra_reg_read_quick(cfg_dev->control_base, DATRA_DMA_TOLOGIC_CONTROL) & BIT(1)) != 0 ||
+				(datra_reg_read_quick(cfg_dev->control_base, DATRA_DMA_FROMLOGIC_CONTROL) & BIT(1)) != 0,
 			1 /* us */, 20 /* timeout */);
 	if (retval)
 		dev_warn(device, "DMA device %d failed to reset ists=0x%x\n", dev->number_of_dma_devices, val);
+
+	/* Clear the reset command */
+	datra_reg_write_quick(cfg_dev->control_base, DATRA_DMA_TOLOGIC_CONTROL, 0);
+	datra_reg_write_quick(cfg_dev->control_base, DATRA_DMA_FROMLOGIC_CONTROL, 0);
+
 	/* Clear interrupt */
-	datra_reg_write_quick(cfg_dev->control_base, DATRA_REG_FIFO_IRQ_CLR, val);
+	datra_reg_write_quick(cfg_dev->control_base, DATRA_REG_FIFO_IRQ_CLR, BIT(15) | BIT(31));
 	++dev->number_of_dma_devices;
-	cfg_dev->isr = datra_dma_isr;
 
 	/* Enable the DMA controller */
 	datra_reg_write_quick(cfg_dev->control_base, DATRA_DMA_TOLOGIC_CONTROL, BIT(0));
